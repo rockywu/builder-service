@@ -1,96 +1,78 @@
 import { createRouter, createWebHistory } from 'vue-router';
 import AdminLayout from './layouts/AdminLayout.vue';
 import PublicLayout from './layouts/PublicLayout.vue';
-import ScaffoldPage from './pages/ScaffoldPage.vue';
 import LoginPage from './pages/LoginPage.vue';
-import DownloadsPage from './pages/DownloadsPage.vue';
-import ProjectDownloadsPage from './pages/ProjectDownloadsPage.vue';
-import { refreshSession } from './auth';
+import ProjectsPage from './pages/admin/ProjectsPage.vue';
+import BuildsPage from './pages/admin/BuildsPage.vue';
+import ReleasesPage from './pages/admin/ReleasesPage.vue';
+import UsersPage from './pages/admin/UsersPage.vue';
+import SettingsPage from './pages/admin/SettingsPage.vue';
+import DownloadsPage from './pages/public/DownloadsPage.vue';
+import ProjectDownloadsPage from './pages/public/ProjectDownloadsPage.vue';
+import { isAdmin, refreshSession } from './auth';
+
+declare module 'vue-router' {
+  interface RouteMeta {
+    requiresAuth?: boolean;
+    adminOnly?: boolean;
+    title?: string;
+  }
+}
 
 export const router = createRouter({
   history: createWebHistory(),
   routes: [
     { path: '/', redirect: '/login' },
+    { path: '/login', component: LoginPage, meta: { title: '登录' } },
     {
       path: '/admin',
       meta: { requiresAuth: true },
       component: AdminLayout,
       children: [
         { path: '', redirect: '/admin/projects' },
-        {
-          path: 'projects',
-          component: ScaffoldPage,
-          props: {
-            title: '项目',
-            description: '仓库、构建配置与项目图标的页面位置。',
-          },
-        },
-        {
-          path: 'builds',
-          component: ScaffoldPage,
-          props: {
-            title: '构建任务',
-            description: '任务队列、并行执行与构建日志的页面位置。',
-          },
-        },
-        {
-          path: 'releases',
-          component: ScaffoldPage,
-          props: {
-            title: '版本',
-            description: '构建产物与四种测试状态的管理页面位置。',
-          },
-        },
+        { path: 'projects', component: ProjectsPage, meta: { title: '项目' } },
+        { path: 'builds', component: BuildsPage, meta: { title: '构建队列' } },
+        { path: 'releases', component: ReleasesPage, meta: { title: '版本' } },
         {
           path: 'users',
-          component: ScaffoldPage,
-          props: { title: '用户', description: '账号与用户管理的页面位置。' },
+          component: UsersPage,
+          meta: { title: '用户', adminOnly: true },
         },
         {
           path: 'settings',
-          component: ScaffoldPage,
-          props: {
-            title: '系统设置',
-            description: '全局构建并行数量的设置页面位置。',
-          },
+          component: SettingsPage,
+          meta: { title: '设置', adminOnly: true },
         },
       ],
     },
     {
-      path: '/',
+      path: '/downloads',
       component: PublicLayout,
       children: [
+        { path: '', component: DownloadsPage, meta: { title: '项目下载' } },
         {
-          path: 'login',
-          component: LoginPage,
-        },
-        {
-          path: 'downloads',
-          component: DownloadsPage,
-        },
-        {
-          path: 'downloads/:projectSlug',
+          path: ':projectSlug',
           component: ProjectDownloadsPage,
-        },
-        {
-          path: ':pathMatch(.*)*',
-          component: ScaffoldPage,
-          props: {
-            title: '页面不存在',
-            description: '请通过导航进入已有页面。',
-          },
+          meta: { title: '项目下载' },
         },
       ],
     },
+    { path: '/:pathMatch(.*)*', redirect: '/downloads' },
   ],
 });
 
 router.beforeEach(async (to) => {
-  // Public downloads never depend on the authentication API.
+  // 公开下载页不调用认证接口
   if (!to.matched.some((record) => record.meta.requiresAuth)) return true;
   try {
-    return (await refreshSession()) ? true : { path: '/login' };
+    if (!(await refreshSession())) return { path: '/login' };
   } catch {
     return { path: '/login', query: { error: 'service' } };
   }
+  if (to.meta.adminOnly && !isAdmin.value) return { path: '/admin/projects' };
+  return true;
+});
+
+router.afterEach((to) => {
+  document.title = to.meta.title ? `${to.meta.title} · 构建平台` : '构建平台';
 });
