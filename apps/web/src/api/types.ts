@@ -6,7 +6,6 @@ export interface User {
   displayName: string;
   role: Role;
   enabled: boolean;
-  password: string;
   createdAt: number;
   lastLoginAt: number | null;
 }
@@ -75,7 +74,9 @@ export interface Job {
   steps: string[];
   script: LogLine[];
   visibleLines: number;
-  plannedMs: number;
+  phase: 0 | 1 | 2;
+  progress?: number;
+  triggeredById: number;
   error?: string;
 }
 

@@ -13,7 +13,16 @@ export function loadConfig() {
   if (process.env.NODE_ENV === 'production' && url.protocol !== 'https:') {
     throw new Error('Production APP_ORIGIN must use HTTPS');
   }
+  const runner = process.env.BUILDER_RUNNER ?? 'local';
+  if (!['local', 'docker'].includes(runner))
+    throw new Error('BUILDER_RUNNER must be local or docker');
+  if (process.env.NODE_ENV === 'production' && runner !== 'docker')
+    throw new Error('Production builds require Docker isolation');
   return {
+    runner: runner as 'local' | 'docker',
+    buildImage: process.env.BUILDER_IMAGE ?? 'builder-runtime:node24',
+    gitNetwork: process.env.BUILDER_GIT_NETWORK ?? 'none',
+    buildNetwork: process.env.BUILDER_BUILD_NETWORK ?? 'none',
     appOrigin,
     host: process.env.HOST ?? '127.0.0.1',
     port,
@@ -21,3 +30,14 @@ export function loadConfig() {
     logLevel: process.env.LOG_LEVEL ?? 'info',
   };
 }
+
+export type AppConfig = Omit<
+  ReturnType<typeof loadConfig>,
+  'runner' | 'buildImage' | 'gitNetwork' | 'buildNetwork'
+> &
+  Partial<
+    Pick<
+      ReturnType<typeof loadConfig>,
+      'runner' | 'buildImage' | 'gitNetwork' | 'buildNetwork'
+    >
+  >;

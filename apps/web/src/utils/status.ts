@@ -1,4 +1,4 @@
-import type { JobStatus, TestStatus } from '../mocks/types';
+import type { JobStatus, TestStatus } from '../api/types';
 
 type TagType = 'primary' | 'success' | 'warning' | 'danger' | 'info';
 

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue';
-import type { JobStatus, TestStatus } from '../mocks/types';
+import type { JobStatus, TestStatus } from '../api/types';
 import { jobStatusMeta, testStatusMeta } from '../utils/status';
 
 const props = defineProps<

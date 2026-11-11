@@ -12,8 +12,8 @@ import {
   Box,
   Link,
 } from '@element-plus/icons-vue';
-import type { Job, Project } from '../../mocks/types';
-import { db, now } from '../../mocks/db';
+import type { Job, Project } from '../../api/types';
+import { db, now } from '../../api/store';
 import { isAdmin } from '../../auth';
 import { relativeTime } from '../../utils/format';
 import PageHeader from '../../components/PageHeader.vue';

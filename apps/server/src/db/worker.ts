@@ -1,4 +1,8 @@
 import Database from 'better-sqlite3';
+import {
+  initializePlatform,
+  createPlatformStore,
+} from '../modules/platform/store.js';
 import { parentPort, workerData } from 'node:worker_threads';
 import { hashPassword } from '../modules/auth/password.js';
 import type { DatabaseRequest, StoredUser, User } from './protocol.js';
@@ -13,7 +17,7 @@ database.pragma('synchronous = FULL');
 database.pragma('busy_timeout = 5000');
 
 const version = database.pragma('user_version', { simple: true }) as number;
-if (version > 1) throw new Error('Unsupported database version');
+if (version > 3) throw new Error('Unsupported database version');
 if (version === 0) {
   const passwordHash = await hashPassword('admin123456');
   database
@@ -43,6 +47,9 @@ if (version === 0) {
     .immediate();
 }
 
+initializePlatform(database);
+const platform = createPlatformStore(database);
+
 const findUser = database.prepare(
   'SELECT id, username, role, enabled, password_hash FROM users WHERE username = ?',
 );
@@ -66,6 +73,10 @@ const publicUser = (user: StoredUser): User => ({
 
 function execute(message: DatabaseRequest): unknown {
   switch (message.operation) {
+    case 'platform':
+      return platform(message.input);
+    case 'backup':
+      return database.backup(message.input.filename).then(() => null);
     case 'findUser':
       return (
         (findUser.get(message.input.username) as StoredUser | undefined) ?? null
@@ -86,6 +97,9 @@ function execute(message: DatabaseRequest): unknown {
           if (input.previousTokenHash)
             deleteSession.run(input.previousTokenHash);
           insertSession.run(input.tokenHash, user.id, input.expiresAt);
+          database
+            .prepare('UPDATE users SET last_login_at=? WHERE id=?')
+            .run(Date.now(), user.id);
           return publicUser(user);
         })
         .immediate();
@@ -108,16 +122,21 @@ function execute(message: DatabaseRequest): unknown {
   }
 }
 
-port.on('message', (message: DatabaseRequest | 'close') => {
+port.on('message', async (message: DatabaseRequest | 'close') => {
   if (message === 'close') {
     database.close();
     port.close();
     return;
   }
   try {
-    port.postMessage({ id: message.id, result: execute(message) });
-  } catch {
-    port.postMessage({ id: message.id, error: '数据库操作失败，请稍后重试。' });
+    port.postMessage({ id: message.id, result: await execute(message) });
+  } catch (error) {
+    const known = error instanceof Error && 'statusCode' in error;
+    port.postMessage({
+      id: message.id,
+      error: known ? error.message : '数据库操作失败，请核对操作结果后重试。',
+      statusCode: known ? error.statusCode : 503,
+    });
   }
 });
 port.postMessage('ready');

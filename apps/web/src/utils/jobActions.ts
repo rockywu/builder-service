@@ -1,6 +1,6 @@
 import { ElMessage } from 'element-plus';
-import type { Job, Release } from '../mocks/types';
-import { db, deleteJob, deleteRelease, stopJob } from '../mocks/db';
+import type { Job, Release } from '../api/types';
+import { db, deleteJob, deleteRelease, stopJob } from '../api/store';
 import { confirmDelete, openConfirm } from './confirm';
 
 const projectName = (id: number) =>

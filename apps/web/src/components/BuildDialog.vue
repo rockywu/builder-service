@@ -2,7 +2,7 @@
 import { computed, ref, watch } from 'vue';
 import { ElMessage } from 'element-plus';
 import { Refresh, Warning } from '@element-plus/icons-vue';
-import type { Job, Project } from '../mocks/types';
+import type { Job, Project } from '../api/types';
 import {
   OCCUPYING,
   db,
@@ -10,7 +10,7 @@ import {
   fetchCode,
   now,
   scriptCommands,
-} from '../mocks/db';
+} from '../api/store';
 import { currentUser } from '../auth';
 import { relativeTime, shortSha } from '../utils/format';
 import ProjectAvatar from './ProjectAvatar.vue';

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { Project } from '../mocks/types';
+import type { Project } from '../api/types';
 
 withDefaults(
   defineProps<{

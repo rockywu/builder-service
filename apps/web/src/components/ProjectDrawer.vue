@@ -3,8 +3,8 @@ import { computed, reactive, ref, watch } from 'vue';
 import type { FormInstance, FormRules, UploadFile } from 'element-plus';
 import { ElMessage } from 'element-plus';
 import { Upload, QuestionFilled } from '@element-plus/icons-vue';
-import type { Project, ProjectInput } from '../mocks/types';
-import { saveProject, scriptCommands } from '../mocks/db';
+import type { Project, ProjectInput } from '../api/types';
+import { saveProject, scriptCommands } from '../api/store';
 import ProjectAvatar from './ProjectAvatar.vue';
 
 const props = defineProps<{ project: Project | null }>();

@@ -1,6 +1,9 @@
 # builder-service
 
-面向 Linux 的构建与版本发布平台，使用 Node.js 和 SQLite。当前已搭建代码脚手架并接入账号密码登录，其余构建业务尚未实现。
+面向 Linux 的构建与版本发布平台，使用 Node.js 和 SQLite。已接入真实 API、持久化队列、Git/Bash/Node.js 构建和公开产物下载；开发阶段按用户要求采用本机执行。Docker 模式须在目标服务器单独验收。
+
+- [运行与执行边界](docs/runtime.md)：本机启动、API、备份恢复及服务器 Docker 配置。
+- [实施与验收记录](docs/implementation-acceptance.md)：测试范围、浏览器结果和未完成的环境验收。
 
 - [构建平台设计方案](docs/build-platform-design.md)：架构、Git 操作、并行队列、构建隔离、账号权限、版本状态和实施验收计划。
 
@@ -14,17 +17,13 @@ cp apps/server/.env.example apps/server/.env
 npm run dev
 ```
 
-### 纯前端 UI 预览
+### UI 与 API
 
-前端使用 Element Plus 组件 + Tailwind CSS 工具类，已按设计文档第 9 节完成全部页面的可交互样板：项目（配置抽屉、发起构建）、构建队列（执行槽位、实时日志、停止/删除）、版本（四色测试状态、删除）、用户、设置（并行数），以及公开下载入口和项目下载页。数据均为浏览器内存 Mock，内置模拟调度器按并行上限 FIFO 执行任务，无需启动后端或配置 `.env`：
+现有界面保持不变，数据来自后端。请使用上面的 `npm run dev` 同时启动前后端。管理员默认 `admin / admin123456`（仅首次初始化），普通账号由管理员创建；浏览器刷新保留后端数据。Git 拉取与构建会执行真实命令，仅接入受信任仓库。
 
-```bash
-npm run dev -w @builder/web
-```
+全局演示环境横条已按用户要求删除；登录页账号填充区继续保留。原内存 Mock 已移除。
 
-访问 `http://127.0.0.1:5173`，演示账号：管理员 `admin / admin123456`，普通用户 `tester / tester123456`（无项目配置、用户和设置权限）。刷新页面即恢复演示数据，不会拉取 Git 代码或执行真实构建。
-
-### 完整服务（现有脚手架）
+### 完整服务
 
 - 默认管理员：账号 `admin`，密码 `admin123456`。仅首次初始化创建，重启不重置。
 - 公开下载入口：`http://127.0.0.1:5173/downloads`。
@@ -40,6 +39,7 @@ npm run typecheck
 npm run build
 npm run format:check
 CI=true npm run test -w @builder/server
+CI=true npm run test:platform -w @builder/server
 npm start
 ```
 
@@ -55,21 +55,23 @@ apps/
       index.ts        # 启动及关闭
       config.ts       # 环境配置
       db/             # better-sqlite3 Worker 启动/关闭
-      modules/        # 已实现 auth，其余业务保留边界说明
+      modules/        # auth + platform API、调度与存储
+      tools/          # Git、Bash、执行器、产物与恢复
   web/
     src/
       layouts/        # 管理端与公开页面布局
-      pages/          # 页面占位组件
+      pages/          # 管理与公开下载页面
+      api/            # 请求、CSRF、轮询与数据适配
       router.ts       # 页面路由
 docs/
   build-platform-design.md
 ```
 
-登录页支持账号密码登录和错误提示，管理页面与管理 API 需要有效会话，管理端提供退出登录。SQLite 已创建 users、sessions 表，密码使用 scrypt 哈希、会话仅保存 token 哈希。
+登录页支持账号密码登录和错误提示，管理页面与管理 API 需要有效会话，管理端提供退出登录。SQLite 通过迁移创建业务表，密码使用 scrypt 哈希、会话仅保存 token 哈希。
 
-下载页面使用独立公开布局，登录页有“前往项目下载”入口；`/downloads` 及项目下载页无需登录，不调用认证接口。当前下载数据仍为页面占位，尚未实现实际产物下载。
+下载页面使用独立公开布局，登录页有“前往项目下载”入口；`/downloads` 及项目下载页无需登录，不调用认证接口。产物通过按 ID 查找的受控下载接口提供，下载前核对大小和 SHA-256。
 
-用户管理、Git、队列调度、构建执行、图标上传及版本状态业务尚未开发。启动不会执行 Git 或构建命令。
+用户管理、项目图标、队列、构建、版本状态均通过服务端 API 操作。服务启动会恢复任务并领取已排队构建；启动前核对 `DATA_DIR` 和执行模式。
 
 后端 `APP_ORIGIN` 必须与浏览器访问的前端来源完全一致，默认 `http://127.0.0.1:5173`。如果使用 localhost 或修改前端端口，请同步修改该变量。生产使用同一 HTTPS 域名；`NODE_ENV=production` 要求 HTTPS 来源，session cookie 随 HTTPS 来源启用 Secure。认证写接口校验 Origin，并对已有会话校验 CSRF token。
 

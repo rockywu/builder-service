@@ -1,10 +1,12 @@
 <script setup lang="ts">
+import { downloadArtifact } from '../../api/client';
+import type { Artifact } from '../../api/types';
 import { computed, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { ElMessage } from 'element-plus';
 import { ArrowDown, Delete, Link, Search } from '@element-plus/icons-vue';
-import type { Release, TestStatus } from '../../mocks/types';
-import { db, now, setTestStatus } from '../../mocks/db';
+import type { Release, TestStatus } from '../../api/types';
+import { db, now, setTestStatus } from '../../api/store';
 import { canManage, currentUser } from '../../auth';
 import {
   formatDateTime,
@@ -82,8 +84,8 @@ async function changeStatus(release: Release, next: TestStatus) {
     saving.value = null;
   }
 }
-function demoDownload(name: string) {
-  ElMessage.info(`演示环境：${name} 不提供实际文件`);
+function demoDownload(file: Artifact) {
+  downloadArtifact(file.id);
 }
 </script>
 
@@ -153,7 +155,7 @@ function demoDownload(name: string) {
                   size="small"
                   link
                   type="primary"
-                  @click="demoDownload(file.name)"
+                  @click="demoDownload(file)"
                   >下载</el-button
                 >
               </li>
@@ -261,7 +263,10 @@ function demoDownload(name: string) {
               target="_blank"
             />
           </el-tooltip>
-          <el-tooltip v-if="canManage(row.triggeredBy)" content="删除版本">
+          <el-tooltip
+            v-if="canManage(row.triggeredBy, row.jobId)"
+            content="删除版本"
+          >
             <el-button
               text
               circle

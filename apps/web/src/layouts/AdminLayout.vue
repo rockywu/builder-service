@@ -2,7 +2,7 @@
 import { computed } from 'vue';
 import { useRouter } from 'vue-router';
 import { ArrowDown, Download, SwitchButton } from '@element-plus/icons-vue';
-import { OCCUPYING, db } from '../mocks/db';
+import { OCCUPYING, db } from '../api/store';
 import { currentUser, isAdmin, logout } from '../auth';
 import AppLogo from '../components/AppLogo.vue';
 
@@ -143,13 +143,6 @@ async function signOut() {
         >
       </nav>
     </header>
-
-    <div
-      class="bg-amber-50 py-1.5 text-center text-xs text-amber-800"
-      role="note"
-    >
-      UI 演示环境 · 数据保存在浏览器内存中，刷新页面即恢复
-    </div>
 
     <main class="mx-auto max-w-7xl px-4 py-6 sm:px-6 sm:py-8">
       <RouterView />

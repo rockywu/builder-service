@@ -153,8 +153,8 @@ test('management API requires authentication; public namespace stays anonymous',
   for (const url of ['/api/auth/me', '/api/projects', '/api/users'])
     assert.equal((await inject({ url })).statusCode, 401);
   assert.equal((await inject({ url: '/api/health' })).statusCode, 200);
-  // Download data is not implemented: public routes return 404 rather than demanding login.
-  assert.equal((await inject({ url: '/api/public/projects' })).statusCode, 404);
+  // Public project data is implemented and remains anonymous.
+  assert.equal((await inject({ url: '/api/public/projects' })).statusCode, 200);
   const session = await signIn();
   assert.equal(
     (
@@ -163,7 +163,7 @@ test('management API requires authentication; public namespace stays anonymous',
         headers: { cookie: session.cookie },
       })
     ).statusCode,
-    404,
+    200,
   );
 });
 

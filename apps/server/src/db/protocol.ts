@@ -1,3 +1,4 @@
+import type { Command } from '../modules/platform/store.js';
 export interface User {
   id: number;
   username: string;
@@ -8,6 +9,8 @@ export interface StoredUser extends User {
   enabled: number;
 }
 export interface DatabaseOperations {
+  platform: { input: Command; result: unknown };
+  backup: { input: { filename: string }; result: null };
   findUser: { input: { username: string }; result: StoredUser | null };
   createSession: {
     input: {
@@ -33,4 +36,9 @@ export type DatabaseRequest = {
     input: DatabaseOperations[K]['input'];
   };
 }[Operation];
-export type DatabaseResponse = { id: number; result?: unknown; error?: string };
+export type DatabaseResponse = {
+  id: number;
+  result?: unknown;
+  error?: string;
+  statusCode?: number;
+};

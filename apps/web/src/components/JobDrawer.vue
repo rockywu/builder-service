@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from 'vue';
+import { computed, nextTick, ref, watch, onBeforeUnmount } from 'vue';
 import { useRouter } from 'vue-router';
 import {
   CircleCheckFilled,
@@ -9,7 +9,7 @@ import {
   Delete,
   Box,
 } from '@element-plus/icons-vue';
-import { OCCUPYING, db, now } from '../mocks/db';
+import { OCCUPYING, db, now, watchLog } from '../api/store';
 import { canManage } from '../auth';
 import {
   formatDateTime,
@@ -35,7 +35,17 @@ const release = computed(() =>
 const lines = computed(
   () => job.value?.script.slice(0, job.value.visibleLines) ?? [],
 );
-const currentStep = computed(() => lines.value.at(-1)?.step ?? -1);
+const currentStep = computed(() => job.value?.phase ?? -1);
+let unwatchLog: (() => void) | undefined;
+watch(
+  () => [open.value, props.jobId] as const,
+  ([visible, id]) => {
+    unwatchLog?.();
+    unwatchLog = visible && id ? watchLog(id) : undefined;
+  },
+  { immediate: true },
+);
+onBeforeUnmount(() => unwatchLog?.());
 const queuePosition = computed(() => {
   if (job.value?.status !== 'queued') return 0;
   return (
@@ -243,7 +253,9 @@ function viewRelease() {
             >查看版本 {{ release.version }}</el-button
           >
           <el-button
-            v-if="job.status === 'running' && canManage(job.triggeredBy)"
+            v-if="
+              job.status === 'running' && canManage(job.triggeredBy, job.id)
+            "
             type="danger"
             plain
             :icon="VideoPause"
@@ -251,7 +263,10 @@ function viewRelease() {
             >停止构建</el-button
           >
           <el-button
-            v-if="!OCCUPYING.includes(job.status) && canManage(job.triggeredBy)"
+            v-if="
+              !OCCUPYING.includes(job.status) &&
+              canManage(job.triggeredBy, job.id)
+            "
             type="danger"
             text
             :icon="Delete"

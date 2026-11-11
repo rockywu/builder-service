@@ -1,11 +1,18 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue';
+import { computed, ref, onMounted } from 'vue';
 import { Search, ArrowRight } from '@element-plus/icons-vue';
-import { db, now, publicReleases } from '../../mocks/db';
+import {
+  publicDb as db,
+  now,
+  publicReleases,
+  publicCounts,
+  loadPublicProjects,
+} from '../../api/store';
 import { relativeTime } from '../../utils/format';
 import ProjectAvatar from '../../components/ProjectAvatar.vue';
 import StatusTag from '../../components/StatusTag.vue';
 
+onMounted(() => loadPublicProjects());
 const search = ref('');
 const items = computed(() => {
   const q = search.value.trim().toLowerCase();
@@ -13,7 +20,11 @@ const items = computed(() => {
     .filter((p) => !q || p.name.toLowerCase().includes(q) || p.slug.includes(q))
     .map((project) => {
       const releases = publicReleases(project.id, 'all');
-      return { project, latest: releases[0], count: releases.length };
+      return {
+        project,
+        latest: releases[0],
+        count: publicCounts[project.id] ?? 0,
+      };
     });
 });
 </script>

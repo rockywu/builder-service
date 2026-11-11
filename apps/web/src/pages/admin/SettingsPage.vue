@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
 import { ElMessage } from 'element-plus';
-import { OCCUPYING, db, saveSettings } from '../../mocks/db';
+import { OCCUPYING, db, saveSettings } from '../../api/store';
 import PageHeader from '../../components/PageHeader.vue';
 
 const value = ref(db.settings.maxConcurrent);

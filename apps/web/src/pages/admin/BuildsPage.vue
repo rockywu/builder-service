@@ -2,8 +2,8 @@
 import { computed, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { Document, VideoPause, Delete, Setting } from '@element-plus/icons-vue';
-import type { Job, JobStatus } from '../../mocks/types';
-import { OCCUPYING, db, now } from '../../mocks/db';
+import type { Job, JobStatus } from '../../api/types';
+import { OCCUPYING, db, now } from '../../api/store';
 import { canManage, isAdmin } from '../../auth';
 import {
   formatDateTime,
@@ -91,8 +91,7 @@ const successRate = computed(() => {
 
 const projectOf = (job: Job) =>
   db.projects.find((p) => p.id === job.projectId)!;
-const progress = (job: Job) =>
-  Math.round((job.visibleLines / Math.max(1, job.script.length)) * 100);
+const progress = (job: Job) => job.progress ?? 0;
 const queuePos = (job: Job) => queuedJobs.value.indexOf(job) + 1;
 const elapsed = (job: Job) =>
   job.startedAt
@@ -292,7 +291,9 @@ function openJob(job: Job) {
               />
             </el-tooltip>
             <el-tooltip
-              v-if="row.status === 'running' && canManage(row.triggeredBy)"
+              v-if="
+                row.status === 'running' && canManage(row.triggeredBy, row.id)
+              "
               content="停止构建"
             >
               <el-button
@@ -306,7 +307,8 @@ function openJob(job: Job) {
             </el-tooltip>
             <el-tooltip
               v-if="
-                !OCCUPYING.includes(row.status) && canManage(row.triggeredBy)
+                !OCCUPYING.includes(row.status) &&
+                canManage(row.triggeredBy, row.id)
               "
               content="删除任务"
             >

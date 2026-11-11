@@ -24,7 +24,12 @@ export class DatabaseClient {
       if (!pending) return;
       this.pending.delete(message.id);
       clearTimeout(pending.timer);
-      if (message.error) pending.reject(new Error(message.error));
+      if (message.error)
+        pending.reject(
+          Object.assign(new Error(message.error), {
+            statusCode: message.statusCode ?? 503,
+          }),
+        );
       else pending.resolve(message.result);
     });
     const fail = () => {

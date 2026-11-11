@@ -1,10 +1,12 @@
 <script setup lang="ts">
+import { downloadArtifact, ApiError } from '../../api/client';
 import { computed, ref, watch } from 'vue';
 import { useRoute } from 'vue-router';
 import { ElMessage } from 'element-plus';
 import { ArrowLeft, Download } from '@element-plus/icons-vue';
-import type { Artifact, TestStatus } from '../../mocks/types';
-import { db, now, publicReleases } from '../../mocks/db';
+import type { Artifact, TestStatus } from '../../api/types';
+import { now, loadPublicPage } from '../../api/store';
+import type { PublicPage } from '../../api/store';
 import { formatDateTime, formatSize, relativeTime } from '../../utils/format';
 import { testStatusMeta, testStatusOrder } from '../../utils/status';
 import ProjectAvatar from '../../components/ProjectAvatar.vue';
@@ -12,22 +14,34 @@ import StatusTag from '../../components/StatusTag.vue';
 
 const PAGE_SIZE = 5;
 const route = useRoute();
-const project = computed(() =>
-  db.projects.find((p) => p.slug === route.params.projectSlug),
-);
+const data = ref<PublicPage | null>(null);
+const project = computed(() => data.value?.project);
 const status = ref<TestStatus | 'all'>('all');
 const page = ref(1);
 watch(status, () => (page.value = 1));
-
-const hasAny = computed(
-  () => project.value && publicReleases(project.value.id, 'all').length > 0,
-);
-const filtered = computed(() =>
-  project.value ? publicReleases(project.value.id, status.value) : [],
-);
-const pageItems = computed(() =>
-  filtered.value.slice((page.value - 1) * PAGE_SIZE, page.value * PAGE_SIZE),
-);
+let requestSequence = 0;
+async function refresh() {
+  const sequence = ++requestSequence;
+  try {
+    const result = await loadPublicPage(
+      String(route.params.projectSlug),
+      status.value,
+      page.value,
+    );
+    if (sequence === requestSequence) data.value = result;
+  } catch (error) {
+    if (sequence !== requestSequence) return;
+    if (error instanceof ApiError && error.status === 404) data.value = null;
+    else throw error;
+  }
+}
+watch(() => [route.params.projectSlug, status.value, page.value], refresh, {
+  immediate: true,
+});
+const hasAny = computed(() => data.value?.hasAny ?? false);
+// Preserve the existing template's count and pagination bindings; the server filters before paging.
+const filtered = computed(() => ({ length: data.value?.total ?? 0 }));
+const pageItems = computed(() => data.value?.items ?? []);
 const featured = computed(() =>
   page.value === 1 ? pageItems.value[0] : undefined,
 );
@@ -40,7 +54,7 @@ const options = [
 ];
 
 function download(file: Artifact) {
-  ElMessage.info(`演示环境：${file.name} 不提供实际文件`);
+  downloadArtifact(file.id);
 }
 </script>
 

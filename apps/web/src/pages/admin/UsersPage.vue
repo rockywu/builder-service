@@ -3,8 +3,8 @@ import { reactive, ref } from 'vue';
 import type { FormInstance, FormRules } from 'element-plus';
 import { ElMessage } from 'element-plus';
 import { Plus, Key, MagicStick, Delete } from '@element-plus/icons-vue';
-import type { Role, User } from '../../mocks/types';
-import { createUser, db, deleteUser, now, updateUser } from '../../mocks/db';
+import type { Role, User } from '../../api/types';
+import { createUser, db, deleteUser, now, updateUser } from '../../api/store';
 import { confirmDelete } from '../../utils/confirm';
 import { currentUser } from '../../auth';
 import { formatDate, relativeTime } from '../../utils/format';
@@ -69,7 +69,11 @@ async function submitCreate() {
 }
 
 /* 启用 / 禁用、角色 */
-async function patch(user: User, data: Partial<User>, success: string) {
+async function patch(
+  user: User,
+  data: Partial<User> & { password?: string },
+  success: string,
+) {
   try {
     await updateUser(user.id, data);
     ElMessage.success(success);
@@ -90,7 +94,7 @@ async function beforeToggle(user: User) {
       : `已启用 ${user.username}`,
   );
   toggling.value = null;
-  return ok && false; // 状态由 mock 数据驱动，阻止开关自行翻转
+  return ok && false; // 状态由 API 数据驱动，阻止开关自行翻转
 }
 
 /* 删除账号 */

@@ -1,31 +1,59 @@
 import { computed, ref } from 'vue';
-import { authenticate, findUser } from './mocks/db';
-import type { User } from './mocks/types';
+import type { User } from './api/types';
+import { request, setCsrfToken, ApiError } from './api/client';
+import { loadAdmin, clearAdmin, db } from './api/store';
 
-/** 纯前端演示：会话保存在内存中，刷新页面即退出。 */
 export const currentUser = ref<User | null>(null);
 export const isAdmin = computed(() => currentUser.value?.role === 'admin');
-
-const wait = (ms: number) =>
-  new Promise<void>((resolve) => window.setTimeout(resolve, ms));
-
+type Session = {
+  user: Pick<User, 'id' | 'username' | 'role'> & Partial<User>;
+  csrfToken: string;
+};
+function accept(data: Session) {
+  currentUser.value = {
+    displayName: data.user.username,
+    enabled: true,
+    createdAt: 0,
+    lastLoginAt: null,
+    ...data.user,
+  };
+  setCsrfToken(data.csrfToken);
+}
 export async function refreshSession() {
-  await wait(80);
-  const user = currentUser.value && findUser(currentUser.value.username);
-  if (!user?.enabled) currentUser.value = null;
-  return Boolean(currentUser.value);
+  try {
+    const data = await request<Session>('/auth/me');
+    accept(data);
+    await loadAdmin(data.user.role);
+    return true;
+  } catch (e) {
+    if (e instanceof ApiError && e.status === 401) {
+      currentUser.value = null;
+      setCsrfToken('');
+      clearAdmin();
+      return false;
+    }
+    throw e;
+  }
 }
-
 export async function login(username: string, password: string) {
-  currentUser.value = await authenticate(username, password);
+  const data = await request<Session>('/auth/login', {
+    method: 'POST',
+    body: { username, password },
+  });
+  accept(data);
+  await loadAdmin(data.user.role);
 }
-
 export async function logout() {
-  await wait(200);
+  await request<void>('/auth/logout', { method: 'POST' });
   currentUser.value = null;
+  setCsrfToken('');
+  clearAdmin();
 }
-
-/** 管理员可操作任意任务；普通用户只能操作自己发起的任务及其版本。 */
-export function canManage(triggeredBy: string) {
-  return isAdmin.value || currentUser.value?.username === triggeredBy;
+export function canManage(_triggeredBy: string, jobId: number) {
+  return (
+    isAdmin.value ||
+    db.jobs.some(
+      (j) => j.id === jobId && j.triggeredById === currentUser.value?.id,
+    )
+  );
 }

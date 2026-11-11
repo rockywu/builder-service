@@ -1,7 +1,7 @@
 # 业务模块边界
 
-`auth/` 已实现密码哈希、登录/当前会话/退出接口，以及管理 API 认证边界。
+- `auth/`：密码哈希、登录/会话/退出、Origin 和 CSRF 边界。
+- `platform/`：项目与图标、Git 拉取、队列与调度、版本和产物、用户与设置、备份接口。数据库操作在专用 Worker 内的短事务执行，SQL 均为单表。
+- `../tools/`：Git/Bash 子进程、本机与 Docker 执行器、路径及产物校验、离线恢复。
 
-后续实现 users、projects、git、builds、releases、settings。构建调度和执行属于 builds，产物下载与测试状态属于 releases，图标上传属于 projects。各模块注册 Fastify 路由，数据库操作交给数据库 Worker。
-
-当前只创建用户及会话表，没有项目、队列或产物业务表，不执行 Git 或构建命令。
+开发阶段使用受信任仓库的本机执行模式。Docker 与生产环境边界及待验收项见 `docs/runtime.md`。
