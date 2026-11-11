@@ -1,0 +1,25 @@
+{
+  "name": "@builder/server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsc-watch --onSuccess \"node --env-file-if-exists=.env dist/index.js\"",
+    "typecheck": "tsc --noEmit",
+    "build": "tsc",
+    "start": "node --env-file-if-exists=.env dist/index.js",
+    "test": "npm run build && node --test test/auth.test.mjs"
+  },
+  "dependencies": {
+    "@fastify/cookie": "11.1.5",
+    "@fastify/rate-limit": "11.2.2",
+    "better-sqlite3": "13.0.3",
+    "fastify": "5.12.8"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "9.6.0",
+    "@types/node": "24.19.2",
+    "tsc-watch": "7.2.1",
+    "typescript": "6.0.3"
+  }
+}

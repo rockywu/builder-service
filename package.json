@@ -1,0 +1,28 @@
+{
+  "name": "builder-service",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "apps/server",
+    "apps/web"
+  ],
+  "engines": {
+    "node": ">=24 <25",
+    "npm": ">=11"
+  },
+  "scripts": {
+    "dev": "concurrently --kill-others -n server,web \"npm run dev -w @builder/server\" \"npm run dev -w @builder/web\"",
+    "typecheck": "npm run typecheck --workspaces",
+    "build": "npm run build --workspaces",
+    "start": "npm run start -w @builder/server",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
+  },
+  "devDependencies": {
+    "concurrently": "10.0.7",
+    "prettier": "3.9.10"
+  },
+  "allowScripts": {
+    "better-sqlite3@13.0.3": true
+  }
+}
