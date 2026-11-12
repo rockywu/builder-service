@@ -1,31 +1,67 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
 import { ElMessage } from 'element-plus';
-import { Refresh, Warning } from '@element-plus/icons-vue';
+import { Refresh } from '@element-plus/icons-vue';
 import type { Job, Project } from '../api/types';
 import {
   OCCUPYING,
   db,
   enqueueBuild,
   fetchCode,
+  loadKnownHosts,
   now,
   scriptCommands,
+  sshHostOf,
 } from '../api/store';
-import { currentUser } from '../auth';
+import { currentUser, isAdmin } from '../auth';
 import { relativeTime, shortSha } from '../utils/format';
+import NoticeBar from './NoticeBar.vue';
 import ProjectAvatar from './ProjectAvatar.vue';
 
 const props = defineProps<{ project: Project | null }>();
 const open = defineModel<boolean>({ required: true });
-const emit = defineEmits<{ created: [job: Job] }>();
+const emit = defineEmits<{
+  created: [job: Job];
+  configure: [project: Project];
+}>();
 
 const branch = ref('');
 const fetching = ref(false);
 const pending = ref(false);
 
+const hostsLoaded = ref(false);
 watch(open, (visible) => {
   if (visible && props.project) branch.value = props.project.defaultBranch;
+  /* 受信任主机仅管理员可读；加载失败时不提示主机问题，不影响拉取 */
+  if (visible && isAdmin.value) {
+    hostsLoaded.value = false;
+    loadKnownHosts()
+      .then(() => (hostsLoaded.value = true))
+      .catch(() => {});
+  }
 });
+
+/** 拉取前的凭据检查：只提示，不阻止拉取 */
+const credentialIssue = computed(() => {
+  const target = props.project && sshHostOf(props.project.repository);
+  if (!target) return null;
+  if (props.project!.sshKeyId == null) return { kind: 'missing' as const };
+  if (!isAdmin.value || !hostsLoaded.value) return null;
+  const trusted = db.knownHosts.some(
+    (h) => h.host === target.host && h.port === target.port,
+  );
+  if (trusted) return null;
+  return {
+    kind: 'untrusted' as const,
+    host: target.port === 22 ? target.host : `${target.host}:${target.port}`,
+  };
+});
+
+function configure() {
+  if (!props.project) return;
+  open.value = false;
+  emit('configure', props.project);
+}
 
 /** 只有当前分支已拉取过的提交才能入队，保证 commit 固定 */
 const fetched = computed(() =>
@@ -91,6 +127,33 @@ async function submit() {
         </div>
       </div>
 
+      <NoticeBar v-if="credentialIssue?.kind === 'missing'" tone="warning">
+        该仓库使用 SSH 地址但未绑定拉取密钥，拉取会失败。
+        <button
+          v-if="isAdmin"
+          type="button"
+          class="font-medium whitespace-nowrap underline"
+          @click="configure"
+        >
+          去配置
+        </button>
+        <template v-else>请联系管理员配置。</template>
+      </NoticeBar>
+      <NoticeBar
+        v-else-if="credentialIssue?.kind === 'untrusted'"
+        tone="warning"
+      >
+        主机 <code class="font-mono">{{ credentialIssue.host }}</code>
+        尚未加入受信任主机，拉取会失败。
+        <a
+          href="/admin/settings"
+          target="_blank"
+          rel="noopener"
+          class="font-medium whitespace-nowrap underline"
+          >前往设置</a
+        >
+      </NoticeBar>
+
       <div>
         <label class="mb-1.5 block text-sm text-slate-700" for="build-branch"
           >构建分支</label
@@ -133,16 +196,11 @@ async function submit() {
           <span class="truncate text-slate-700">{{ fetched.message }}</span>
         </div>
       </div>
-      <el-alert
-        v-else
-        type="warning"
-        :closable="false"
-        show-icon
-        :icon="Warning"
-        title="该分支尚未拉取，请先点击「拉取代码」以固定要构建的提交"
-      />
+      <NoticeBar v-else tone="warning"
+        >该分支尚未拉取，请先点击「拉取代码」以固定要构建的提交</NoticeBar
+      >
 
-      <dl class="grid grid-cols-3 gap-3 text-xs">
+      <dl class="grid grid-cols-2 gap-3 text-xs sm:grid-cols-4">
         <div>
           <dt class="text-slate-500">工作目录</dt>
           <dd class="mt-0.5 truncate font-mono text-slate-800">
@@ -159,16 +217,18 @@ async function submit() {
           <dt class="text-slate-500">超时</dt>
           <dd class="mt-0.5 text-slate-800">{{ project.timeout }} 分钟</dd>
         </div>
+        <div>
+          <dt class="text-slate-500">拉取凭据</dt>
+          <dd
+            class="mt-0.5 truncate text-slate-800"
+            :title="project.sshKeyName ?? '匿名'"
+          >
+            {{ project.sshKeyName ?? '匿名' }}
+          </dd>
+        </div>
       </dl>
 
-      <p
-        class="rounded-md px-3 py-2 text-xs"
-        :class="
-          willWait
-            ? 'bg-amber-50 text-amber-800'
-            : 'bg-emerald-50 text-emerald-800'
-        "
-      >
+      <NoticeBar :tone="willWait ? 'warning' : 'success'">
         <template v-if="willWait"
           >执行槽位已满（{{ occupied }}/{{
             db.settings.maxConcurrent
@@ -179,7 +239,7 @@ async function submit() {
             db.settings.maxConcurrent
           }}），入队后立即开始</template
         >
-      </p>
+      </NoticeBar>
     </div>
     <template #footer>
       <el-button @click="open = false">取消</el-button>

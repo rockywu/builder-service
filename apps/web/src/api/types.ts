@@ -28,6 +28,42 @@ export interface Project {
   icon?: string | undefined;
   /** 最近一次拉取的提交，用于发起构建时固定 commit。 */
   fetched: { branch: string; sha: string; message: string; at: number };
+  /** 拉取 SSH 仓库使用的密钥；匿名 HTTPS 为 null。 */
+  sshKeyId: number | null;
+  /** 密钥名称由服务端随项目返回，普通用户无需读取密钥列表。 */
+  sshKeyName: string | null;
+}
+
+/** Git SSH 密钥。私钥只保存在服务端，任何接口都不返回。 */
+export interface SshKey {
+  id: number;
+  name: string;
+  type: 'ed25519' | 'rsa' | 'ecdsa';
+  source: 'generated' | 'imported';
+  /** `SHA256:...` */
+  fingerprint: string;
+  publicKey: string;
+  projectIds: number[];
+  createdAt: number;
+  updatedAt: number;
+  lastUsedAt: number | null;
+}
+
+/** 受信任的仓库主机公钥，拉取时严格校验。 */
+export interface KnownHost {
+  id: number;
+  host: string;
+  port: number;
+  keyType: string;
+  fingerprint: string;
+  createdAt: number;
+}
+
+/** 扫描得到、尚未保存的主机公钥。 */
+export interface ScannedHostKey {
+  keyType: string;
+  publicKey: string;
+  fingerprint: string;
 }
 
 export type ProjectInput = Pick<
@@ -40,6 +76,7 @@ export type ProjectInput = Pick<
   | 'buildScript'
   | 'artifactPath'
   | 'timeout'
+  | 'sshKeyId'
 > & { icon?: string | undefined };
 
 export type JobStatus =

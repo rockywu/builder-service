@@ -233,6 +233,7 @@ function onCommand(command: string, project: Project) {
     v-model="buildOpen"
     :project="activeProject"
     @created="onCreated"
+    @configure="openConfig"
   />
   <JobDrawer v-model="jobOpen" :job-id="activeJobId" />
 </template>

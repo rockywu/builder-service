@@ -4,7 +4,15 @@ import type { FormInstance, FormRules, UploadFile } from 'element-plus';
 import { ElMessage } from 'element-plus';
 import { Upload, QuestionFilled } from '@element-plus/icons-vue';
 import type { Project, ProjectInput } from '../api/types';
-import { saveProject, scriptCommands } from '../api/store';
+import {
+  db,
+  loadKnownHosts,
+  loadSshKeys,
+  saveProject,
+  scriptCommands,
+  sshHostOf,
+} from '../api/store';
+import NoticeBar from './NoticeBar.vue';
 import ProjectAvatar from './ProjectAvatar.vue';
 
 const props = defineProps<{ project: Project | null }>();
@@ -24,6 +32,7 @@ const emptyForm = (): ProjectInput => ({
     '#!/usr/bin/env bash\n# 在「工作目录」下以 bash -e 执行，任一命令失败即终止构建\nnpm ci\nnpm run build\n',
   artifactPath: './dist',
   timeout: 30,
+  sshKeyId: null,
 });
 const form = reactive<ProjectInput>(emptyForm());
 const editing = computed(() => Boolean(props.project));
@@ -61,7 +70,42 @@ const rules: FormRules<ProjectInput> = {
   artifactPath: [
     { required: true, message: '请输入产物路径', trigger: 'blur' },
   ],
+  sshKeyId: [
+    {
+      validator: (_rule, value: number | null, callback) =>
+        value == null && sshHostOf(form.repository)
+          ? callback(new Error('SSH 地址需要选择拉取密钥'))
+          : callback(),
+      trigger: 'change',
+    },
+  ],
 };
+
+/* SSH 密钥：抽屉打开时按需加载，失败不影响保存其他字段 */
+const keysError = ref(false);
+const hostsLoaded = ref(false);
+async function loadCredentials() {
+  keysError.value = false;
+  hostsLoaded.value = false;
+  await Promise.all([
+    loadSshKeys().catch(() => (keysError.value = true)),
+    loadKnownHosts()
+      .then(() => (hostsLoaded.value = true))
+      .catch(() => {}),
+  ]);
+}
+const repositoryHost = computed(() => sshHostOf(form.repository));
+const untrustedHost = computed(() => {
+  const target = repositoryHost.value;
+  if (!target || form.sshKeyId == null || !hostsLoaded.value) return '';
+  return db.knownHosts.some(
+    (h) => h.host === target.host && h.port === target.port,
+  )
+    ? ''
+    : target.port === 22
+      ? target.host
+      : `${target.host}:${target.port}`;
+});
 
 watch(open, (visible) => {
   if (!visible) return;
@@ -78,12 +122,14 @@ watch(open, (visible) => {
           buildScript: p.buildScript,
           artifactPath: p.artifactPath,
           timeout: p.timeout,
+          sshKeyId: p.sshKeyId ?? null,
           icon: p.icon,
         }
       : { ...emptyForm(), icon: undefined },
   );
   iconError.value = '';
   formRef.value?.clearValidate();
+  void loadCredentials();
 });
 
 const preview = computed(() => ({
@@ -117,7 +163,12 @@ async function submit() {
   pending.value = true;
   try {
     const saved = await saveProject(
-      { ...form, buildScript: form.buildScript.replace(/\r\n/g, '\n') },
+      {
+        ...form,
+        buildScript: form.buildScript.replace(/\r\n/g, '\n'),
+        // HTTPS 仓库匿名拉取，不保留密钥引用
+        sshKeyId: repositoryHost.value ? form.sshKeyId : null,
+      },
       props.project?.id,
     );
     emit('saved', saved);
@@ -211,6 +262,54 @@ async function submit() {
             placeholder="git@git.example.com:group/repo.git"
           />
         </el-form-item>
+        <el-form-item v-if="repositoryHost" label="SSH 密钥" prop="sshKeyId">
+          <el-select
+            v-model="form.sshKeyId"
+            class="w-full"
+            :placeholder="
+              keysError ? '密钥列表加载失败' : '选择拉取该仓库使用的密钥'
+            "
+          >
+            <el-option
+              v-for="key in db.sshKeys"
+              :key="key.id"
+              :value="key.id"
+              :label="key.name"
+            >
+              <div class="flex items-center justify-between gap-4">
+                <span class="truncate">{{ key.name }}</span>
+                <span class="shrink-0 font-mono text-xs text-slate-400">{{
+                  key.fingerprint.slice(0, 19)
+                }}</span>
+              </div>
+            </el-option>
+            <template #empty>
+              <p class="px-4 py-3 text-center text-xs text-slate-500">
+                {{ keysError ? '密钥列表加载失败' : '还没有 SSH 密钥' }}
+              </p>
+            </template>
+            <template #footer>
+              <a
+                href="/admin/settings"
+                target="_blank"
+                rel="noopener"
+                class="text-xs text-brand-600 hover:underline"
+                >前往设置管理密钥 →</a
+              >
+            </template>
+          </el-select>
+          <NoticeBar v-if="untrustedHost" tone="warning" class="mt-1.5 w-full">
+            主机 <code class="font-mono">{{ untrustedHost }}</code>
+            尚未加入受信任主机，拉取会失败。
+            <a
+              href="/admin/settings"
+              target="_blank"
+              rel="noopener"
+              class="font-medium whitespace-nowrap underline"
+              >前往设置</a
+            >
+          </NoticeBar>
+        </el-form-item>
         <div class="grid gap-x-4 sm:grid-cols-2">
           <el-form-item label="默认分支" prop="defaultBranch">
             <el-input v-model="form.defaultBranch" class="font-mono" />
@@ -241,15 +340,13 @@ async function submit() {
             />
           </el-form-item>
         </div>
-        <div
-          class="rounded-md bg-slate-50 px-3 py-2.5 text-xs leading-relaxed text-slate-600"
-        >
+        <NoticeBar>
           <span class="font-medium text-slate-800">工作目录</span>
           是构建脚本在仓库里的执行位置（相对仓库根目录），产物路径也相对它计算。
           普通项目填 <code class="font-mono text-slate-800">./</code>； Monorepo
           中只构建某个子项目时填子目录，如
           <code class="font-mono text-slate-800">./apps/web</code>。
-        </div>
+        </NoticeBar>
       </section>
 
       <section>
@@ -318,12 +415,9 @@ async function submit() {
             />
           </el-form-item>
         </div>
-        <el-alert
-          type="info"
-          :closable="false"
-          show-icon
-          title="配置修改只影响之后发起的构建；已排队任务使用入队时的配置快照。"
-        />
+        <NoticeBar
+          >配置修改只影响之后发起的构建；已排队任务使用入队时的配置快照。</NoticeBar
+        >
       </section>
     </el-form>
 
