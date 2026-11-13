@@ -9,7 +9,9 @@
     "build": "tsc",
     "start": "node --env-file-if-exists=.env dist/index.js",
     "test": "npm run build && node --test test/auth.test.mjs",
-    "test:platform": "npm run build && node --test test/platform.test.mjs"
+    "test:platform": "npm run build && node --test test/platform.test.mjs",
+    "test:ssh": "npm run build && node --test test/ssh.test.mjs",
+    "test:project-delete": "npm run build && node --test test/project-delete.test.mjs"
   },
   "dependencies": {
     "@fastify/cookie": "11.1.5",

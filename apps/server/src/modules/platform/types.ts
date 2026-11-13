@@ -16,6 +16,8 @@ export interface Project {
   name: string;
   description: string;
   repository: string;
+  sshKeyId: number | null;
+  sshKeyName: string | null;
   defaultBranch: string;
   branches: string[];
   /** 构建脚本的执行目录，相对仓库根目录；产物路径也相对此目录。 */
@@ -26,6 +28,8 @@ export interface Project {
   timeout: number;
   color: string;
   icon?: string | undefined;
+  deleting?: boolean;
+  deletionError?: string;
   /** 最近一次拉取的提交，用于发起构建时固定 commit。 */
   fetched: { branch: string; sha: string; message: string; at: number };
 }
@@ -35,6 +39,7 @@ export type ProjectInput = Pick<
   | 'name'
   | 'description'
   | 'repository'
+  | 'sshKeyId'
   | 'defaultBranch'
   | 'workdir'
   | 'buildScript'
@@ -69,7 +74,7 @@ export interface Job {
   /** 构建配置快照 */
   snapshot: Pick<
     Project,
-    'workdir' | 'buildScript' | 'artifactPath' | 'timeout'
+    'workdir' | 'buildScript' | 'artifactPath' | 'timeout' | 'sshKeyId'
   >;
   steps: string[];
   script: LogLine[];
@@ -78,6 +83,33 @@ export interface Job {
   progress?: number;
   triggeredById: number;
   error?: string | undefined;
+}
+
+export interface SshKey {
+  id: number;
+  name: string;
+  type: 'ed25519' | 'rsa' | 'ecdsa';
+  source: 'generated' | 'imported';
+  fingerprint: string;
+  publicKey: string;
+  projectIds: number[];
+  createdAt: number;
+  updatedAt: number;
+  lastUsedAt: number | null;
+}
+export interface StoredSshKey extends SshKey {
+  encryptedPrivateKey: Uint8Array;
+}
+export interface ScannedHostKey {
+  keyType: string;
+  publicKey: string;
+  fingerprint: string;
+}
+export interface KnownHost extends ScannedHostKey {
+  id: number;
+  host: string;
+  port: number;
+  createdAt: number;
 }
 
 export type TestStatus = 'passed' | 'pending' | 'testing' | 'rejected';

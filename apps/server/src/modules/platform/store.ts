@@ -1,5 +1,15 @@
 import type Database from 'better-sqlite3';
-import type { User, Project, Job, Release, Artifact } from './types.js';
+import type {
+  User,
+  Project,
+  Job,
+  Release,
+  Artifact,
+  SshKey,
+  StoredSshKey,
+  KnownHost,
+  ScannedHostKey,
+} from './types.js';
 import { PlatformError, requireValue } from './errors.js';
 
 type Actor = { id: number; username: string; role: 'admin' | 'user' };
@@ -34,7 +44,17 @@ const parse = <T>(value: string): T => JSON.parse(value) as T;
 
 export function initializePlatform(db: Database.Database) {
   const version = db.pragma('user_version', { simple: true }) as number;
-  if (version >= 3) return;
+  if (version >= 4) return;
+  if (version === 3) {
+    db.transaction(() => {
+      db.exec(`
+        CREATE TABLE ssh_keys (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, type TEXT NOT NULL, source TEXT NOT NULL, fingerprint TEXT NOT NULL, public_key TEXT NOT NULL, encrypted_private_key BLOB NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, last_used_at INTEGER);
+        CREATE TABLE known_hosts (id INTEGER PRIMARY KEY AUTOINCREMENT, host TEXT NOT NULL, port INTEGER NOT NULL, key_type TEXT NOT NULL, public_key TEXT NOT NULL, fingerprint TEXT NOT NULL, created_at INTEGER NOT NULL, UNIQUE(host,port,key_type));
+      `);
+      db.pragma('user_version=4');
+    }).immediate();
+    return;
+  }
   if (version === 2) {
     db.transaction(() => {
       db.exec(`ALTER TABLE artifacts RENAME TO artifacts_v2;
@@ -55,6 +75,7 @@ export function initializePlatform(db: Database.Database) {
       }
       db.pragma('user_version=3');
     }).immediate();
+    initializePlatform(db);
     return;
   }
   db.transaction(() => {
@@ -81,26 +102,86 @@ export function initializePlatform(db: Database.Database) {
     );
     db.pragma('user_version = 3');
   }).immediate();
+  initializePlatform(db);
 }
 
 export function createPlatformStore(db: Database.Database) {
   db.exec(
     'CREATE INDEX IF NOT EXISTS audit_request_lookup ON audit_logs(action,target,at)',
   );
-  const allProjects = () =>
+  const rawProjects = () =>
     (
       db.prepare('SELECT id, payload FROM projects ORDER BY id DESC').all() as {
         id: number;
         payload: string;
       }[]
-    ).map((r) => ({ ...parse<Project>(r.payload), id: r.id }));
+    ).map((r) => ({
+      ...parse<Project>(r.payload),
+      id: r.id,
+      sshKeyId: parse<Project>(r.payload).sshKeyId ?? null,
+    }));
+  const allProjects = () => {
+    const keys = db.prepare('SELECT id,name FROM ssh_keys').all() as {
+      id: number;
+      name: string;
+    }[];
+    const names = new Map(keys.map((k) => [k.id, k.name]));
+    return rawProjects().map((p) => ({
+      ...p,
+      sshKeyName: names.get(p.sshKeyId!) ?? null,
+    }));
+  };
   const project = (id: number) => {
     const row = db
       .prepare('SELECT id, payload FROM projects WHERE id=?')
       .get(id) as { id: number; payload: string } | undefined;
     requireValue(row, '项目不存在。', 404);
-    return { ...parse<Project>(row.payload), id: row.id };
+    const p = { ...parse<Project>(row.payload), id: row.id };
+    p.sshKeyId ??= null;
+    const key =
+      p.sshKeyId === null
+        ? undefined
+        : (db
+            .prepare('SELECT name FROM ssh_keys WHERE id=?')
+            .get(p.sshKeyId) as { name: string } | undefined);
+    return { ...p, sshKeyName: key?.name ?? null };
   };
+  const sshKeys = (): SshKey[] => {
+    const projects = rawProjects();
+    return (
+      db
+        .prepare(
+          'SELECT id,name,type,source,fingerprint,public_key,created_at,updated_at,last_used_at FROM ssh_keys ORDER BY id',
+        )
+        .all() as Record<string, unknown>[]
+    ).map((r) => ({
+      id: Number(r.id),
+      name: String(r.name),
+      type: r.type as SshKey['type'],
+      source: r.source as SshKey['source'],
+      fingerprint: String(r.fingerprint),
+      publicKey: String(r.public_key),
+      projectIds: projects.filter((p) => p.sshKeyId === r.id).map((p) => p.id),
+      createdAt: Number(r.created_at),
+      updatedAt: Number(r.updated_at),
+      lastUsedAt: r.last_used_at === null ? null : Number(r.last_used_at),
+    }));
+  };
+  const knownHosts = (): KnownHost[] =>
+    (
+      db.prepare('SELECT * FROM known_hosts ORDER BY id').all() as Record<
+        string,
+        unknown
+      >[]
+    ).map((r) => ({
+      id: Number(r.id),
+      host: String(r.host),
+      port: Number(r.port),
+      keyType: String(r.key_type),
+      publicKey: String(r.public_key),
+      fingerprint: String(r.fingerprint),
+      createdAt: Number(r.created_at),
+    }));
   const jobRow = (id: number) => {
     const r = db.prepare('SELECT * FROM build_jobs WHERE id=?').get(id) as
       JobRow | undefined;
@@ -207,6 +288,151 @@ export function createPlatformStore(db: Database.Database) {
         403,
       );
     switch (c.action) {
+      case 'sshKeys':
+        admin();
+        return sshKeys();
+      case 'sshKeyCredentials': {
+        // Internal runner operation only; no HTTP route exposes encrypted material.
+        requireValue(!c.actor, '无权读取凭据。', 403);
+        const row = db
+          .prepare('SELECT encrypted_private_key FROM ssh_keys WHERE id=?')
+          .get(Number(d.id)) as
+          { encrypted_private_key: Uint8Array } | undefined;
+        requireValue(row, '拉取凭据已删除', 400);
+        return {
+          encryptedPrivateKey: row.encrypted_private_key,
+          hosts: knownHosts(),
+        };
+      }
+      case 'sshKeyUsed':
+        requireValue(!c.actor, '无权修改凭据使用记录。', 403);
+        db.prepare('UPDATE ssh_keys SET last_used_at=? WHERE id=?').run(
+          Date.now(),
+          Number(d.id),
+        );
+        return null;
+      case 'saveSshKey': {
+        admin();
+        const input = d.input as StoredSshKey;
+        const previous = d.id
+          ? sshKeys().find((k) => k.id === Number(d.id))
+          : undefined;
+        requireValue(!d.id || previous, '密钥不存在。', 404);
+        requireValue(
+          !sshKeys().some(
+            (k) => k.name === input.name && k.id !== previous?.id,
+          ),
+          '密钥名称已存在。',
+          409,
+        );
+        const now = Date.now();
+        let keyId = previous?.id;
+        if (previous) {
+          requireValue(
+            !input.encryptedPrivateKey || previous.source === 'imported',
+            '服务端生成的密钥不能更换私钥。',
+          );
+          db.prepare('UPDATE ssh_keys SET name=?,updated_at=? WHERE id=?').run(
+            input.name,
+            now,
+            keyId!,
+          );
+          if (input.encryptedPrivateKey)
+            db.prepare(
+              'UPDATE ssh_keys SET type=?,fingerprint=?,public_key=?,encrypted_private_key=? WHERE id=?',
+            ).run(
+              input.type,
+              input.fingerprint,
+              input.publicKey,
+              Buffer.from(input.encryptedPrivateKey),
+              keyId!,
+            );
+        } else {
+          keyId = Number(
+            db
+              .prepare(
+                'INSERT INTO ssh_keys(name,type,source,fingerprint,public_key,encrypted_private_key,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)',
+              )
+              .run(
+                input.name,
+                input.type,
+                input.source,
+                input.fingerprint,
+                input.publicKey,
+                Buffer.from(input.encryptedPrivateKey),
+                now,
+                now,
+              ).lastInsertRowid,
+          );
+        }
+        const result = sshKeys().find((k) => k.id === keyId)!;
+        audit(
+          actor!,
+          previous
+            ? input.encryptedPrivateKey
+              ? 'ssh-key.replace'
+              : 'ssh-key.rename'
+            : 'ssh-key.create',
+          `${result.name} ${result.fingerprint}`,
+        );
+        return result;
+      }
+      case 'deleteSshKey': {
+        admin();
+        const key = sshKeys().find((k) => k.id === Number(d.id));
+        requireValue(key, '密钥不存在。', 404);
+        for (const p of rawProjects().filter((p) => p.sshKeyId === key.id)) {
+          db.prepare('UPDATE projects SET payload=? WHERE id=?').run(
+            JSON.stringify({ ...p, sshKeyId: null, sshKeyName: null }),
+            p.id,
+          );
+        }
+        db.prepare('DELETE FROM ssh_keys WHERE id=?').run(key.id);
+        audit(actor!, 'ssh-key.delete', `${key.name} ${key.fingerprint}`);
+        return null;
+      }
+      case 'knownHosts':
+        admin();
+        return knownHosts().map(({ publicKey: _key, ...host }) => host);
+      case 'saveKnownHosts': {
+        admin();
+        const result: Omit<KnownHost, 'publicKey'>[] = [];
+        for (const k of d.keys as ScannedHostKey[]) {
+          db.prepare(
+            'INSERT INTO known_hosts(host,port,key_type,public_key,fingerprint,created_at) VALUES(?,?,?,?,?,?) ON CONFLICT(host,port,key_type) DO UPDATE SET public_key=excluded.public_key,fingerprint=excluded.fingerprint,created_at=excluded.created_at',
+          ).run(
+            String(d.host),
+            Number(d.port),
+            k.keyType,
+            k.publicKey,
+            k.fingerprint,
+            Date.now(),
+          );
+          const { publicKey: _key, ...host } = knownHosts().find(
+            (h) =>
+              h.host === d.host && h.port === d.port && h.keyType === k.keyType,
+          )!;
+          result.push(host);
+          audit(
+            actor!,
+            'known-host.trust',
+            `${d.host}:${d.port} ${k.fingerprint}`,
+          );
+        }
+        return result;
+      }
+      case 'deleteKnownHost': {
+        admin();
+        const host = knownHosts().find((h) => h.id === Number(d.id));
+        requireValue(host, '受信任主机不存在。', 404);
+        db.prepare('DELETE FROM known_hosts WHERE id=?').run(host.id);
+        audit(
+          actor!,
+          'known-host.delete',
+          `${host.host}:${host.port} ${host.fingerprint}`,
+        );
+        return null;
+      }
       case 'list':
         return {
           projects: allProjects(),
@@ -217,6 +443,70 @@ export function createPlatformStore(db: Database.Database) {
         };
       case 'projects':
         return allProjects();
+      case 'markProjectDelete': {
+        admin();
+        const p = project(Number(d.id));
+        const rows = db
+          .prepare('SELECT * FROM build_jobs WHERE project_id=?')
+          .all(p.id) as JobRow[];
+        requireValue(
+          !rows.some((j) => ['running', 'canceling'].includes(j.status)),
+          '项目有运行中或停止中的构建，请先停止任务后再删除。',
+          409,
+        );
+        db.prepare('UPDATE projects SET payload=? WHERE id=?').run(
+          JSON.stringify({ ...p, deleting: true, deletionError: '' }),
+          p.id,
+        );
+        db.prepare('UPDATE build_jobs SET deleting=1 WHERE project_id=?').run(
+          p.id,
+        );
+        db.prepare('UPDATE releases SET deleting=1 WHERE project_id=?').run(
+          p.id,
+        );
+        if (!p.deleting) audit(actor!, 'project.delete.begin', p.id);
+        return p;
+      }
+      case 'projectDeletions':
+        return allProjects().filter((p) => p.deleting);
+      case 'projectDeletionJobs': {
+        const p = project(Number(d.id));
+        requireValue(p.deleting, '项目不在清理流程。', 409);
+        return (
+          db
+            .prepare('SELECT id FROM build_jobs WHERE project_id=? ORDER BY id')
+            .all(p.id) as { id: number }[]
+        ).map((j) => j.id);
+      }
+      case 'projectDeleteFailed': {
+        const p = project(Number(d.id));
+        requireValue(p.deleting, '项目不在清理流程。', 409);
+        db.prepare('UPDATE projects SET payload=? WHERE id=?').run(
+          JSON.stringify({ ...p, deletionError: '删除未完成，请重试删除。' }),
+          p.id,
+        );
+        return null;
+      }
+      case 'completeProjectDelete': {
+        const p = project(Number(d.id));
+        requireValue(p.deleting, '项目不在清理流程。', 409);
+        requireValue(
+          !db
+            .prepare('SELECT id FROM build_jobs WHERE project_id=? LIMIT 1')
+            .get(p.id),
+          '项目任务尚未清理完成。',
+          409,
+        );
+        requireValue(
+          !db
+            .prepare('SELECT id FROM releases WHERE project_id=? LIMIT 1')
+            .get(p.id),
+          '项目版本尚未清理完成。',
+          409,
+        );
+        db.prepare('DELETE FROM projects WHERE id=?').run(p.id);
+        return null;
+      }
       case 'project':
         return project(Number(d.id));
       case 'jobs':
@@ -232,9 +522,26 @@ export function createPlatformStore(db: Database.Database) {
         return settings();
       case 'saveProject': {
         admin();
-        const input = d.input as Project;
+        const input = {
+          ...(d.input as Project),
+          sshKeyId: (d.input as Project).sshKeyId ?? null,
+        };
+        if (/^(git@|ssh:\/\/)/.test(input.repository))
+          requireValue(input.sshKeyId !== null, 'SSH 地址需要选择密钥');
+        if (input.sshKeyId !== null)
+          requireValue(
+            db
+              .prepare('SELECT id FROM ssh_keys WHERE id=?')
+              .get(input.sshKeyId),
+            '所选 SSH 密钥不存在。',
+          );
+        input.sshKeyName =
+          input.sshKeyId === null
+            ? null
+            : sshKeys().find((k) => k.id === input.sshKeyId)!.name;
         if (d.id) {
           const p = project(Number(d.id));
+          requireValue(!p.deleting, '项目正在删除，不能修改配置。', 409);
           const next = {
             ...p,
             ...input,
@@ -242,7 +549,7 @@ export function createPlatformStore(db: Database.Database) {
             slug: p.slug,
             branches: [...new Set([...p.branches, input.defaultBranch])],
             fetched:
-              p.repository === input.repository
+              p.repository === input.repository && p.sshKeyId === input.sshKeyId
                 ? p.fetched
                 : { branch: '', sha: '', message: '', at: 0 },
           };
@@ -289,8 +596,10 @@ export function createPlatformStore(db: Database.Database) {
       }
       case 'fetched': {
         const p = project(Number(d.id));
+        requireValue(!p.deleting, '项目正在删除，不能拉取代码。', 409);
         requireValue(
-          p.repository === d.repository,
+          p.repository === d.repository &&
+            (d.sshKeyId === undefined || p.sshKeyId === d.sshKeyId),
           '仓库配置已变化，请重新拉取。',
           409,
         );
@@ -330,6 +639,7 @@ export function createPlatformStore(db: Database.Database) {
           409,
         );
         const p = project(Number(d.projectId));
+        requireValue(!p.deleting, '项目正在删除，不能发起构建。', 409);
         requireValue(
           p.fetched.sha === d.sha &&
             p.fetched.branch === d.branch &&
@@ -374,6 +684,7 @@ export function createPlatformStore(db: Database.Database) {
             buildScript: p.buildScript,
             artifactPath: p.artifactPath,
             timeout: p.timeout,
+            sshKeyId: p.sshKeyId,
           },
           repository: p.repository,
           steps: ['拉取源码', '执行构建脚本', '收集产物'],

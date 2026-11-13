@@ -158,6 +158,9 @@ export async function saveProject(input: ProjectInput, id?: number) {
     { ...input, icon: input.icon ?? null },
   );
 }
+export async function deleteProject(id: number) {
+  return mutation<{ ok: boolean }>(`/projects/${id}`, 'DELETE');
+}
 export async function fetchCode(projectId: number, branch: string) {
   const result = await mutation<Project['fetched']>(
     `/projects/${projectId}/fetch`,
@@ -287,17 +290,21 @@ export async function deleteKnownHost(id: number) {
 }
 /** 从 git@host:path 或 ssh://[user@]host[:port]/path 解析主机与端口；HTTPS 返回 null。 */
 export function sshHostOf(repository: string) {
-  const scp = /^[^@\s/]+@([^:\s/]+):(?!\/)/.exec(repository);
-  if (scp) return { host: scp[1]!, port: 22 };
-  const url = /^ssh:\/\/(?:[^@\s/]+@)?(\[[^\]]+\]|[^:\s/]+)(?::(\d+))?\//.exec(
-    repository,
-  );
-  if (url)
+  const scp = /^git@([^:\s/]+):/.exec(repository);
+  const address = scp ? `ssh://${scp[1]}/` : repository;
+  if (!address.startsWith('ssh://')) return null;
+  try {
+    const url = new URL(address);
     return {
-      host: url[1]!.replace(/^\[|\]$/g, ''),
-      port: Number(url[2] ?? 22),
+      host: url.hostname
+        .replace(/^\[|\]$/g, '')
+        .toLowerCase()
+        .replace(/\.$/, ''),
+      port: Number(url.port || 22),
     };
-  return null;
+  } catch {
+    return null;
+  }
 }
 
 export function publicReleases(projectId: number, status: TestStatus | 'all') {

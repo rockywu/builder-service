@@ -17,7 +17,7 @@ database.pragma('synchronous = FULL');
 database.pragma('busy_timeout = 5000');
 
 const version = database.pragma('user_version', { simple: true }) as number;
-if (version > 3) throw new Error('Unsupported database version');
+if (version > 4) throw new Error('Unsupported database version');
 if (version === 0) {
   const passwordHash = await hashPassword('admin123456');
   database

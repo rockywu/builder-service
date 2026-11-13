@@ -5,9 +5,9 @@
 
 ## 0. 一句话现状
 
-前端（设置页密钥/主机管理、项目抽屉选密钥、发起构建弹窗凭据提示、统一提示条）**已完成**，全部按 `docs/ssh-key-api.md` 调接口；后端**完全没有实现**：`/api/ssh-keys`、`/api/known-hosts` 返回 404，项目接口不收也不回 `sshKeyId`，执行器强制无凭据拉取，SSH 仓库必然失败。
+前端已完成并提交于 `4f21e2b`。后端已补齐存储迁移、主密钥加密、8 个管理接口、项目绑定、任务快照和 Git 凭据注入；当前变更尚未提交，专项测试与回归结果以 `docs/implementation-acceptance.md` 为准。Docker 实际挂载、目标网络与生产部署仍须单独验收。
 
-> 注意：以下前端与文档改动目前**未提交**（`git status` 可见），开工前请先确认由谁提交，避免覆盖。
+> 下方保留原交接任务拆分。已完成的后端实现保持既有 UI，新增逻辑位于 `tools/ssh.ts` 及现有平台模块。
 
 ---
 
@@ -76,52 +76,52 @@
 
 ---
 
-## 3. 后端缺口清单
+## 3. 后端实施清单
 
-现有后端结构：Fastify 路由 `apps/server/src/modules/platform/routes.ts`，业务 `service.ts`，SQLite 存储与迁移 `store.ts`（`user_version` 当前为 3，项目/任务以 JSON `payload` 列存储），执行 `apps/server/src/tools/runner.ts`、`process.ts`，配置 `config.ts`，测试 `apps/server/test/platform.test.mjs`。
+现有后端结构：Fastify 路由 `apps/server/src/modules/platform/routes.ts`，业务 `service.ts`，SQLite 存储与迁移 `store.ts`（`user_version` 当前为 4，项目/任务以 JSON `payload` 列存储），执行 `apps/server/src/tools/runner.ts`、`process.ts`，配置 `config.ts`，测试 `apps/server/test/ssh.test.mjs` 与 `platform.test.mjs`。
 
 ### A. 存储与迁移（`store.ts`）
 
-- [ ] `user_version` 3 → 4 迁移：新建 `ssh_keys`（id、name UNIQUE、type、source、fingerprint、public_key、encrypted_private_key BLOB、created_at、updated_at、last_used_at）与 `known_hosts`（id、host、port、key_type、public_key、fingerprint、created_at，UNIQUE(host,port,key_type)）。
-- [ ] 项目以 payload 存储：`Project` 增加 `sshKeyId: number | null`（老数据缺省视为 `null`）。契约写的 `projects.ssh_key_id` 列与 payload 方案二选一，**需能在删除密钥时同事务把引用置空**，并能查询某密钥被哪些项目引用（`SshKey.projectIds`）。
-- [ ] 任务快照：`types.ts` 的 `Job.snapshot` 增加 `sshKeyId`，入队时写入。
+- [x] `user_version` 3 → 4 迁移：新建 `ssh_keys`（id、name UNIQUE、type、source、fingerprint、public_key、encrypted_private_key BLOB、created_at、updated_at、last_used_at）与 `known_hosts`（id、host、port、key_type、public_key、fingerprint、created_at，UNIQUE(host,port,key_type)）。
+- [x] 项目以 payload 存储：`Project` 增加 `sshKeyId: number | null`（老数据缺省视为 `null`）。采用 payload 方案，**删除密钥时同事务把引用置空**，并能查询某密钥被哪些项目引用（`SshKey.projectIds`）。
+- [x] 任务快照：`types.ts` 的 `Job.snapshot` 增加 `sshKeyId`，入队时写入。
 
 ### B. 私钥加密与配置
 
-- [ ] `config.ts` 读取 `BUILDER_SECRET_KEY`（32 字节 base64）；AES-256-GCM，每条随机 nonce，存 `nonce + ciphertext + tag`。
-- [ ] 缺失/长度错误：密钥相关接口返回 503 + 原因；其他功能正常；**绝不回退明文**。
-- [ ] `apps/server/.env.example`、`docs/runtime.md` 补生成命令（如 `openssl rand -base64 32`）与备份说明（主密钥与数据库分开保管；丢失主密钥=全部私钥失效）。
+- [x] `config.ts` 读取 `BUILDER_SECRET_KEY`（32 字节 base64）；AES-256-GCM，每条随机 nonce，存 `nonce + ciphertext + tag`。
+- [x] 缺失/长度错误：密钥相关接口返回 503 + 原因；其他功能正常；**绝不回退明文**。
+- [x] `apps/server/.env.example`、`docs/runtime.md` 补生成命令（如 `openssl rand -base64 32`）与备份说明（主密钥与数据库分开保管；丢失主密钥=全部私钥失效）。
 
 ### C. 密钥与主机接口（`routes.ts`）
 
-- [ ] 8 个接口全部按契约实现：仅管理员（复用 `admin(r)`）、非 GET 校验 CSRF、分页。
-- [ ] 生成：ed25519，输出 OpenSSH 单行公钥与 `SHA256:` 指纹（与 `ssh-keygen -lf` 一致）。导入：≤16 KB，仅无口令 OpenSSH/PEM，RSA ≥ 2048；失败 400「仅支持无口令的 OpenSSH 私钥」。
-- [ ] `PATCH` 的 `privateKey` 只允许 `source='imported'`。
-- [ ] `scan`：`ssh-keyscan` 用参数数组、超时 10 s、走 Git 受限网络，不保存；遵守私网/元数据地址出口策略。
-- [ ] `POST /known-hosts`：服务端重算指纹并与提交值比对，不一致拒绝；同 host+port+keyType 覆盖。
-- [ ] 审计（`audit()`）：密钥新增/改名/更换/删除、主机信任/移除，只记名称与指纹。
-- [ ] **任何响应、日志、审计、错误信息都不得出现私钥。**
+- [x] 8 个接口全部按契约实现：仅管理员（复用 `admin(r)`）、非 GET 校验 CSRF、分页。
+- [x] 生成：ed25519，输出 OpenSSH 单行公钥与 `SHA256:` 指纹（与 `ssh-keygen -lf` 一致）。导入：≤16 KB，仅无口令 OpenSSH/PEM，RSA ≥ 2048；失败 400「仅支持无口令的 OpenSSH 私钥」。
+- [x] `PATCH` 的 `privateKey` 只允许 `source='imported'`。
+- [x] `scan`：`ssh-keyscan` 用参数数组、超时 10 s、走 Git 受限网络，不保存；遵守私网/元数据地址出口策略。
+- [x] `POST /known-hosts`：服务端重算指纹并与提交值比对，不一致拒绝；同 host+port+keyType 覆盖。
+- [x] 审计（`audit()`）：密钥新增/改名/更换/删除、主机信任/移除，只记名称与指纹。
+- [x] **任何响应、日志、审计、错误信息都不得出现私钥。**
 
 ### D. 项目接口集成
 
-- [ ] `saveProject()`（`routes.ts` 约 206 行）读取并校验 `sshKeyId`：SSH 地址为空 → 400「SSH 地址需要选择密钥」；指向不存在的密钥 → 400；HTTPS 允许携带但执行时忽略。当前实现**直接丢弃**该字段。
-- [ ] `GET /api/projects` 对所有登录用户返回 `sshKeyId` 与 `sshKeyName`（不返回其他密钥信息）。公开接口 `/api/public/projects` **不得**返回。
+- [x] `saveProject()`（`routes.ts` 约 206 行）读取并校验 `sshKeyId`：SSH 地址为空 → 400「SSH 地址需要选择密钥」；指向不存在的密钥 → 400；HTTPS 允许携带但执行时忽略。已接入存储并在事务内复核密钥引用。
+- [x] `GET /api/projects` 对所有登录用户返回 `sshKeyId` 与 `sshKeyName`（不返回其他密钥信息）。公开接口 `/api/public/projects` **不得**返回。
 
 ### E. 执行器（核心安全点）
 
-现状：`process.ts:12` 的 `cleanEnvironment()` 与 `runner.ts:140` Docker `--env` 写死 `IdentityFile=none`、`UserKnownHostsFile=/dev/null`。
+默认命令继续禁用宿主身份文件；仅远端 Git 步骤覆盖 `GIT_SSH_COMMAND` 并提供临时凭据。
 
-- [ ] `runner.fetch()`（约 164 行，`ls-remote` + `fetch`）与 `runner.execute()`（约 253/321 行 `fetch`）在**任务源码目录之外**创建 `0700` 临时目录，写解密私钥（`0600`）与由 `known_hosts` 生成的文件（`[host]:port` 格式，与 1.2 的解析规则一致）。
-- [ ] `GIT_SSH_COMMAND` 按契约第 5 节组装，经环境变量传入，不拼 shell。
-- [ ] Docker：仅 git 步骤只读挂载凭据目录；`bash build.sh` 步骤不挂载。本机模式同样只在 git 子进程环境中提供。
-- [ ] 步骤结束（成功/失败/取消/超时）立即删除；服务启动时清理遗留凭据目录。
-- [ ] 拉取与执行使用同一密钥：`/projects/:id/fetch` 用项目当前密钥，执行用快照 `sshKeyId`；密钥已删除 → 失败「拉取凭据已删除」，不回退无凭据。
-- [ ] 主机校验失败 → 「主机 X 未受信任或主机公钥已变化」；成功使用后更新 `lastUsedAt`。
+- [x] `runner.fetch()`（约 164 行，`ls-remote` + `fetch`）与 `runner.execute()`（约 253/321 行 `fetch`）在**任务源码目录之外**创建 `0700` 临时目录，写解密私钥（`0600`）与由 `known_hosts` 生成的文件（`[host]:port` 格式，与 1.2 的解析规则一致）。
+- [x] `GIT_SSH_COMMAND` 按契约第 5 节组装，经环境变量传入，不拼 shell。
+- [x] Docker：仅 git 步骤只读挂载凭据目录；`bash build.sh` 步骤不挂载。本机模式同样只在 git 子进程环境中提供。
+- [x] 步骤结束（成功/失败/取消/超时）立即删除；服务启动时清理遗留凭据目录。
+- [x] 拉取与执行使用同一密钥：`/projects/:id/fetch` 用项目当前密钥，执行用快照 `sshKeyId`；密钥已删除 → 失败「拉取凭据已删除」，不回退无凭据。
+- [x] 主机校验失败 → 「主机 X 未受信任或主机公钥已变化」；成功使用后更新 `lastUsedAt`。
 
-### F. 测试（`apps/server/test/platform.test.mjs`）
+### F. 测试（`apps/server/test/ssh.test.mjs`、`platform.test.mjs`）
 
-- [ ] 加密往返、主密钥缺失 503、导入格式校验、指纹计算、删除密钥置空项目引用、项目 SSH 地址缺密钥 400、普通用户访问密钥接口 403、响应中不含私钥。
-- [ ] 执行器：凭据目录权限、步骤后删除、构建脚本环境中拿不到私钥（`env`、`ls /run/creds`、`cat ~/.ssh/*`）。
+- [x] 加密往返、主密钥缺失 503、导入格式校验、指纹计算、删除密钥置空项目引用、项目 SSH 地址缺密钥 400、普通用户访问密钥接口 403、响应中不含私钥。
+- [x] 执行器：凭据目录权限、步骤后删除、构建脚本环境中拿不到私钥（`env`、`ls /run/creds`、`cat ~/.ssh/*`）。
 
 ---
 
@@ -162,12 +162,13 @@ T2 与 T3 可在 T1 完成后并行；T4 不依赖 T2 的接口，可用测试�
 
 ---
 
-## 6. 待决问题（开发前请与用户确认）
+## 6. 已采用的实施决定与限制
 
-1. **项目引用存储**：契约写 `projects.ssh_key_id` 列，但现有项目是 JSON payload。加列还是放 payload（需保证删除置空的原子性）？
-2. **密钥生成方式**：Node `crypto.generateKeyPairSync('ed25519')` 自行编码 OpenSSH 格式，还是调用 `ssh-keygen`（需确认部署机与 `builder-runtime` 镜像都安装 openssh-client）。
-3. **scan 出口策略**：开发阶段本机执行时，私网地址拒绝规则是否启用（内网 GitLab 场景会被误拒）。
-4. **主机未受信任的提示对普通用户不可见**：当前设计如此（主机列表仅管理员）。若需要普通用户也看到，需新增只读字段（如项目响应带 `hostTrusted: boolean`），属于 UI 数据变更，需用户同意。
+1. **项目引用存储**：沿用 JSON payload，在同一事务内删除密钥与清空引用；契约同步修订。
+2. **密钥生成方式**：复用 `ssh-keygen`，支持无口令 OpenSSH/PEM；运行服务的主机需安装 OpenSSH 客户端，`tools/Dockerfile` 已包含 openssh-client。
+3. **scan 出口策略**：本机与 Docker 均先拒绝非公网解析结果，扫描已校验的 IP；Docker 同时走 Git 专用受限网络。内网 Git 扫描暂不支持，不能直接放宽出口策略。
+4. **普通用户主机提示**：保留原设计，主机列表仅管理员可读。
+5. **本机隔离限制**：只适用于受信任仓库；同账号并发脚本具有宿主权限。Docker 的真实容器隔离和受限出口尚需目标 Linux 环境验收。
 
 ## 7. 禁止事项
 

@@ -26,6 +26,8 @@ export interface Project {
   timeout: number;
   color: string;
   icon?: string | undefined;
+  deleting?: boolean;
+  deletionError?: string;
   /** 最近一次拉取的提交，用于发起构建时固定 commit。 */
   fetched: { branch: string; sha: string; message: string; at: number };
   /** 拉取 SSH 仓库使用的密钥；匿名 HTTPS 为 null。 */
@@ -106,7 +108,7 @@ export interface Job {
   /** 构建配置快照 */
   snapshot: Pick<
     Project,
-    'workdir' | 'buildScript' | 'artifactPath' | 'timeout'
+    'workdir' | 'buildScript' | 'artifactPath' | 'timeout' | 'sshKeyId'
   >;
   steps: string[];
   script: LogLine[];

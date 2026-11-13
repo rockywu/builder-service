@@ -23,6 +23,7 @@ export function loadConfig() {
     buildImage: process.env.BUILDER_IMAGE ?? 'builder-runtime:node24',
     gitNetwork: process.env.BUILDER_GIT_NETWORK ?? 'none',
     buildNetwork: process.env.BUILDER_BUILD_NETWORK ?? 'none',
+    secretKey: process.env.BUILDER_SECRET_KEY ?? '',
     appOrigin,
     host: process.env.HOST ?? '127.0.0.1',
     port,
@@ -33,11 +34,11 @@ export function loadConfig() {
 
 export type AppConfig = Omit<
   ReturnType<typeof loadConfig>,
-  'runner' | 'buildImage' | 'gitNetwork' | 'buildNetwork'
+  'runner' | 'buildImage' | 'gitNetwork' | 'buildNetwork' | 'secretKey'
 > &
   Partial<
     Pick<
       ReturnType<typeof loadConfig>,
-      'runner' | 'buildImage' | 'gitNetwork' | 'buildNetwork'
+      'runner' | 'buildImage' | 'gitNetwork' | 'buildNetwork' | 'secretKey'
     >
   >;

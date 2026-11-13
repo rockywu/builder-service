@@ -17,8 +17,9 @@ import type { AppConfig } from '../../config.js';
 import type { Command } from './store.js';
 import type { Job, Release, User, Project } from './types.js';
 import { BuildRunner } from '../../tools/runner.js';
+import { SshService } from '../../tools/ssh.js';
 import { runProcess, ExecutionUnconfirmedError } from '../../tools/process.js';
-import { requireValue } from './errors.js';
+import { requireValue, PlatformError } from './errors.js';
 
 export interface State {
   projects: Project[];
@@ -29,6 +30,7 @@ export interface State {
 }
 export class PlatformService {
   readonly runner: BuildRunner;
+  readonly ssh: SshService;
   private active = new Map<
     number,
     { controller: AbortController; promise: Promise<void> }
@@ -44,11 +46,13 @@ export class PlatformService {
   mutations = 0;
   private readers = new Map<number, number>();
   private deleting = new Map<number, Promise<void>>();
+  private deletingProjects = new Map<number, Promise<void>>();
   constructor(
     readonly db: DatabaseClient,
     readonly config: AppConfig,
   ) {
-    this.runner = new BuildRunner(config);
+    this.ssh = new SshService(config, db);
+    this.runner = new BuildRunner(config, this.ssh);
     this.lockFile = join(config.dataDirectory, 'scheduler.lock');
   }
   async command<T>(
@@ -100,6 +104,8 @@ export class PlatformService {
     try {
       await this.runner.initialize();
       await this.recover();
+      await this.runner.cleanupTransient();
+      await this.ssh.cleanup();
       this.recovering = false;
     } catch (e) {
       this.error = e instanceof Error ? e.message : '执行器暂不可用。';
@@ -144,8 +150,13 @@ export class PlatformService {
         await this.command('quarantine', { id: j.id });
       }
     }
-    for (const j of await this.command<Job[]>('deletions'))
-      await this.delete(j.id);
+    const deletingProjects = await this.command<Project[]>('projectDeletions');
+    for (const j of await this.command<Job[]>('deletions')) {
+      if (!deletingProjects.some((p) => p.id === j.projectId))
+        await this.delete(j.id);
+    }
+    for (const p of deletingProjects)
+      await this.deleteProject(p.id).catch(() => {});
   }
   async pump() {
     if (this.pumping || this.closing || this.maintenance || this.recovering)
@@ -269,6 +280,52 @@ export class PlatformService {
       this.deleting.delete(id);
     }
   }
+  async deleteProject(id: number, actor?: Command['actor']) {
+    requireValue(!this.maintenance, '备份正在进行，请稍后重试。', 409);
+    if (actor) await this.command('markProjectDelete', { id }, actor);
+    const previous = this.deletingProjects.get(id);
+    if (previous) return previous;
+    const task = (async () => {
+      const project = await this.command<Project>('project', { id });
+      requireValue(project.deleting, '项目不在清理流程。', 409);
+      try {
+        for (const jobId of await this.command<number[]>(
+          'projectDeletionJobs',
+          { id },
+        ))
+          await this.delete(jobId);
+        if (
+          project.icon &&
+          /^\/api\/public\/icons\/[a-f0-9-]{36}\.png$/.test(project.icon)
+        ) {
+          const projects = await this.command<Project[]>('projects');
+          if (!projects.some((p) => p.id !== id && p.icon === project.icon)) {
+            await rm(
+              join(
+                this.config.dataDirectory,
+                'icons',
+                project.icon.split('/').at(-1)!,
+              ),
+              { force: true },
+            );
+          }
+        }
+        await this.command('completeProjectDelete', { id });
+      } catch (error) {
+        await this.command('projectDeleteFailed', { id });
+        throw new PlatformError(
+          409,
+          '删除未完成：请等待文件下载结束或检查文件权限后重试。',
+        );
+      }
+    })();
+    this.deletingProjects.set(id, task);
+    try {
+      await task;
+    } finally {
+      this.deletingProjects.delete(id);
+    }
+  }
   async openArtifact(id: number) {
     const f = await this.command<{
       id: number;
@@ -373,6 +430,7 @@ export class PlatformService {
       await new Promise((resolve) => setTimeout(resolve, 10));
     for (const a of this.active.values()) a.controller.abort();
     await Promise.allSettled([...this.active.values()].map((a) => a.promise));
+    await Promise.allSettled([...this.deletingProjects.values()]);
     if (this.lockOwned) {
       await rm(this.lockFile, { force: true });
       this.lockOwned = false;

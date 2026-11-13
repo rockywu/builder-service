@@ -11,9 +11,10 @@ import {
   List,
   Box,
   Link,
+  Delete,
 } from '@element-plus/icons-vue';
 import type { Job, Project } from '../../api/types';
-import { db, now } from '../../api/store';
+import { db, now, deleteProject } from '../../api/store';
 import { isAdmin } from '../../auth';
 import { relativeTime } from '../../utils/format';
 import PageHeader from '../../components/PageHeader.vue';
@@ -30,6 +31,28 @@ const buildOpen = ref(false);
 const jobOpen = ref(false);
 const activeProject = ref<Project | null>(null);
 const activeJobId = ref<number | null>(null);
+const deleteTarget = ref<Project | null>(null);
+const deleteAnchor = ref<HTMLElement>();
+const deletingId = ref<number | null>(null);
+function rememberMenuAnchor(event: MouseEvent) {
+  deleteAnchor.value = event.currentTarget as HTMLElement;
+}
+async function confirmProjectDelete() {
+  const project = deleteTarget.value;
+  if (!project || deletingId.value !== null) return;
+  deleteTarget.value = null;
+  deletingId.value = project.id;
+  try {
+    await deleteProject(project.id);
+    ElMessage.success('项目已删除');
+  } catch (error) {
+    ElMessage.error(
+      error instanceof Error ? error.message : '删除未完成，请重试',
+    );
+  } finally {
+    deletingId.value = null;
+  }
+}
 
 const cards = computed(() => {
   const q = search.value.trim().toLowerCase();
@@ -78,6 +101,7 @@ function onCreated(job: Job) {
   openJob(job);
 }
 function onCommand(command: string, project: Project) {
+  if (command === 'delete' && isAdmin.value) deleteTarget.value = project;
   if (command === 'config') openConfig(project);
   if (command === 'builds')
     void router.push({ path: '/admin/builds', query: { project: project.id } });
@@ -130,10 +154,20 @@ function onCommand(command: string, project: Project) {
           placement="bottom-end"
           @command="(c: string) => onCommand(c, project)"
         >
-          <el-button text circle :icon="MoreFilled" aria-label="更多操作" />
+          <el-button
+            text
+            circle
+            :icon="MoreFilled"
+            aria-label="更多操作"
+            @click="rememberMenuAnchor"
+          />
           <template #dropdown>
             <el-dropdown-menu>
-              <el-dropdown-item v-if="isAdmin" command="config" :icon="Setting"
+              <el-dropdown-item
+                v-if="isAdmin"
+                command="config"
+                :icon="Setting"
+                :disabled="project.deleting"
                 >构建配置</el-dropdown-item
               >
               <el-dropdown-item command="builds" :icon="List"
@@ -145,13 +179,27 @@ function onCommand(command: string, project: Project) {
               <el-dropdown-item command="public" :icon="Link" divided
                 >公开下载页</el-dropdown-item
               >
+              <el-dropdown-item
+                v-if="isAdmin"
+                command="delete"
+                :icon="Delete"
+                divided
+                class="!text-red-600"
+                :disabled="deletingId !== null"
+              >
+                {{ project.deleting ? '重试删除' : '删除项目' }}
+              </el-dropdown-item>
             </el-dropdown-menu>
           </template>
         </el-dropdown>
       </div>
 
       <p class="line-clamp-2 min-h-10 px-5 text-sm text-slate-600">
-        {{ project.description || '暂无描述' }}
+        {{
+          project.deleting
+            ? project.deletionError || '正在删除项目，请稍候'
+            : project.description || '暂无描述'
+        }}
       </p>
 
       <dl
@@ -206,6 +254,7 @@ function onCommand(command: string, project: Project) {
             type="primary"
             plain
             :icon="VideoPlay"
+            :disabled="project.deleting || deletingId === project.id"
             @click="openBuild(project)"
             >发起构建</el-button
           >
@@ -228,6 +277,24 @@ function onCommand(command: string, project: Project) {
     <el-button @click="search = ''">清除搜索</el-button>
   </el-empty>
 
+  <el-popconfirm
+    :visible="deleteTarget !== null"
+    virtual-triggering
+    :virtual-ref="deleteAnchor"
+    placement="bottom-end"
+    :width="300"
+    :title="`确定删除项目「${deleteTarget?.name ?? ''}」？将永久清理全部构建记录、源码副本、日志、版本和产物，公开下载立即失效。此操作无法撤销。`"
+    confirm-button-text="删除项目"
+    cancel-button-text="取消"
+    confirm-button-type="danger"
+    @confirm="confirmProjectDelete"
+    @cancel="deleteTarget = null"
+    @update:visible="
+      (visible: boolean) => {
+        if (!visible) deleteTarget = null;
+      }
+    "
+  />
   <ProjectDrawer v-model="drawerOpen" :project="activeProject" />
   <BuildDialog
     v-model="buildOpen"

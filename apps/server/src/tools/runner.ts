@@ -16,16 +16,22 @@ import {
   groupAlive,
   confirmGroupStopped,
   ExecutionUnconfirmedError,
+  ProcessExitError,
 } from './process.js';
 import { safePath, collectArtifacts, syncDirectory } from './paths.js';
 import type { AppConfig } from '../config.js';
 import type { Job, Project, LogLine } from '../modules/platform/types.js';
-import { requireValue } from '../modules/platform/errors.js';
+import { requireValue, PlatformError } from '../modules/platform/errors.js';
+import { SshService, sshCommand } from './ssh.js';
+import type { SshCredentials } from './ssh.js';
 
 export class BuildRunner {
   readonly root: string;
   readonly mode: 'local' | 'docker';
-  constructor(readonly config: AppConfig) {
+  constructor(
+    readonly config: AppConfig,
+    readonly ssh?: SshService,
+  ) {
     this.root = join(config.dataDirectory, 'builds');
     this.mode = config.runner ?? 'local';
     requireValue(
@@ -78,13 +84,21 @@ export class BuildRunner {
     output?: (s: string, e: boolean) => void,
     network?: string,
     timeout = 120_000,
+    credentials?: SshCredentials,
   ) {
+    requireValue(
+      !credentials || args[0] === 'git',
+      '凭据只允许提供给 Git 步骤。',
+    );
     if (this.mode === 'local') {
       await mkdir(join(directory, '.home'), { recursive: true, mode: 0o700 });
       return runProcess(args[0]!, args.slice(1), {
         cwd: directory,
         homeDirectory: join(directory, '.home'),
-        ...(typeof id === 'number' ? { markerDirectory: directory } : {}),
+        markerDirectory: directory,
+        ...(credentials
+          ? { gitSshCommand: sshCommand(credentials.directory) }
+          : {}),
         ...(signal ? { signal } : {}),
         ...(output ? { output } : {}),
         timeout,
@@ -116,6 +130,12 @@ export class BuildRunner {
           '--cpus=2',
           '--network',
           network ?? 'none',
+          ...(credentials
+            ? [
+                '--mount',
+                `type=bind,src=${credentials.directory},dst=/run/creds,readonly`,
+              ]
+            : []),
           '--tmpfs',
           '/tmp:rw,nosuid,nodev,size=256m',
           ...(args[0] === 'bash'
@@ -137,7 +157,7 @@ export class BuildRunner {
           '--env',
           'GIT_TERMINAL_PROMPT=0',
           '--env',
-          'GIT_SSH_COMMAND=ssh -F /dev/null -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityFile=none -o IdentityAgent=none -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=yes',
+          `GIT_SSH_COMMAND=${credentials ? sshCommand('/run/creds') : 'ssh -F /dev/null -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityFile=none -o IdentityAgent=none -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=yes'}`,
           this.config.buildImage ?? 'builder-runtime:node24',
           ...args,
         ],
@@ -161,11 +181,79 @@ export class BuildRunner {
       }
     }
   }
+  private async remote<T>(
+    repository: string,
+    keyId: number | null | undefined,
+    operation: (credentials?: SshCredentials) => Promise<T>,
+  ) {
+    const credentials = await this.ssh?.credentials(repository, keyId);
+    requireValue(
+      credentials || !/^(git@|ssh:\/\/)/.test(repository),
+      'SSH 凭据服务不可用。',
+      503,
+    );
+    try {
+      const result = await operation(credentials);
+      if (credentials) await this.ssh!.used(credentials.keyId);
+      return result;
+    } catch (e) {
+      if (credentials && e instanceof ProcessExitError) {
+        if (
+          /REMOTE HOST IDENTIFICATION HAS CHANGED|Host key verification failed|No .*host key is known/.test(
+            e.output,
+          )
+        )
+          throw new PlatformError(
+            400,
+            `主机 ${credentials.host} 未受信任或主机公钥已变化`,
+          );
+        if (/Permission denied|Authentication failed/.test(e.output))
+          throw new PlatformError(
+            400,
+            'SSH 认证失败，请检查项目密钥和 Deploy Key 授权。',
+          );
+      }
+      throw e;
+    } finally {
+      if (credentials)
+        await rm(credentials.directory, { recursive: true, force: true });
+    }
+  }
+  async scanHost(addresses: string[], port: number) {
+    await this.initialize();
+    const id = `scan-${crypto.randomUUID()}`,
+      dir = join(this.root, id);
+    await mkdir(dir, { mode: 0o700 });
+    let confirmed = true;
+    try {
+      return await this.command(
+        id,
+        dir,
+        ['ssh-keyscan', '-T', '5', '-p', String(port), ...addresses],
+        undefined,
+        undefined,
+        this.config.gitNetwork,
+        10_000,
+      );
+    } catch (error) {
+      if (error instanceof ExecutionUnconfirmedError) {
+        confirmed = false;
+        throw error;
+      }
+      throw Object.assign(
+        new Error('SSH 主机扫描失败或超时，请检查地址、端口和出口策略。'),
+        { statusCode: 400 },
+      );
+    } finally {
+      if (confirmed) await rm(dir, { recursive: true, force: true });
+    }
+  }
   async fetch(project: Project, branch: string) {
     await this.initialize();
     const id = `fetch-${crypto.randomUUID()}`;
     const dir = join(this.root, id);
     await mkdir(dir, { mode: 0o700 });
+    let confirmed = true;
     try {
       const args = [
         'git',
@@ -175,13 +263,20 @@ export class BuildRunner {
         '--heads',
         project.repository,
       ];
-      const refs = await this.command(
-        id,
-        dir,
-        args,
-        undefined,
-        undefined,
-        this.config.gitNetwork,
+      const refs = await this.remote(
+        project.repository,
+        project.sshKeyId,
+        (credentials) =>
+          this.command(
+            id,
+            dir,
+            args,
+            undefined,
+            undefined,
+            this.config.gitNetwork,
+            120_000,
+            credentials,
+          ),
       );
       const branches = refs
         .split('\n')
@@ -198,24 +293,28 @@ export class BuildRunner {
         400,
       );
       await this.command(id, dir, ['git', 'init', 'repo']);
-      await this.command(
-        id,
-        dir,
-        [
-          'git',
-          '-C',
-          'repo',
-          '-c',
-          'protocol.file.allow=never',
-          'fetch',
-          '--depth=1',
-          '--no-tags',
-          project.repository,
-          sha,
-        ],
-        undefined,
-        undefined,
-        this.config.gitNetwork,
+      await this.remote(project.repository, project.sshKeyId, (credentials) =>
+        this.command(
+          id,
+          dir,
+          [
+            'git',
+            '-C',
+            'repo',
+            '-c',
+            'protocol.file.allow=never',
+            'fetch',
+            '--depth=1',
+            '--no-tags',
+            project.repository,
+            sha,
+          ],
+          undefined,
+          undefined,
+          this.config.gitNetwork,
+          120_000,
+          credentials,
+        ),
       );
       const message = (
         await this.command(id, dir, [
@@ -229,8 +328,11 @@ export class BuildRunner {
         ])
       ).trim();
       return { fetched: { branch, sha, message, at: Date.now() }, branches };
+    } catch (error) {
+      if (error instanceof ExecutionUnconfirmedError) confirmed = false;
+      throw error;
     } finally {
-      await rm(dir, { recursive: true, force: true });
+      if (confirmed) await rm(dir, { recursive: true, force: true });
     }
   }
   async log(id: number, offset: number) {
@@ -289,7 +391,11 @@ export class BuildRunner {
       for (const line of lines)
         append(line, line.startsWith('+ ') ? 'cmd' : undefined);
     };
-    const command = async (args: string[], network?: string) => {
+    const command = async (
+      args: string[],
+      network?: string,
+      credentials?: SshCredentials,
+    ) => {
       const result = await this.command(
         job.id,
         dir,
@@ -298,6 +404,7 @@ export class BuildRunner {
         output,
         network,
         job.snapshot.timeout * 60_000,
+        credentials,
       );
       if (buffered) {
         append(buffered);
@@ -311,20 +418,23 @@ export class BuildRunner {
       await phase(0);
       await command(['git', 'init', 'source']);
       // File transport is prohibited for user repositories. Tests may use a local HTTP Git fixture.
-      await command(
-        [
-          'git',
-          '-C',
-          'source',
-          '-c',
-          'protocol.file.allow=never',
-          'fetch',
-          '--depth=1',
-          '--no-tags',
-          job.repository!,
-          job.sha,
-        ],
-        this.config.gitNetwork,
+      await this.remote(job.repository!, job.snapshot.sshKeyId, (credentials) =>
+        command(
+          [
+            'git',
+            '-C',
+            'source',
+            '-c',
+            'protocol.file.allow=never',
+            'fetch',
+            '--depth=1',
+            '--no-tags',
+            job.repository!,
+            job.sha,
+          ],
+          this.config.gitNetwork,
+          credentials,
+        ),
       );
       await command([
         'git',
@@ -408,6 +518,61 @@ export class BuildRunner {
       await log.close();
     }
   }
+  private async stopLocal(directory: string) {
+    // Local child identity is recorded separately; an unconfirmed process keeps its slot.
+    const marker = join(directory, 'process');
+    try {
+      const [pid, started] = (await readFile(marker, 'utf8'))
+        .trim()
+        .split('\n');
+      requireValue(
+        pid !== 'pending' && pid && started,
+        '本机构建进程身份尚未确认，保留槽位待核对。',
+        503,
+      );
+      const data = { pid: Number(pid), started: started.trim() };
+      let actual = '';
+      try {
+        actual = (
+          await runProcess('ps', ['-p', String(data.pid), '-o', 'lstart='])
+        ).trim();
+      } catch (e) {
+        if (!(e instanceof Error) || !e.message.includes('退出码 1')) throw e;
+      }
+      if (actual === data.started) {
+        process.kill(-data.pid, 'SIGKILL');
+        await confirmGroupStopped(data.pid);
+      } else if (await groupAlive(data.pid)) {
+        throw new ExecutionUnconfirmedError(
+          '原任务进程组仍存在但身份无法确认，保留槽位。',
+        );
+      }
+      await rm(marker, { force: true });
+    } catch (e) {
+      if (
+        !['ENOENT', 'ESRCH'].includes((e as NodeJS.ErrnoException).code ?? '')
+      )
+        throw e;
+    }
+  }
+  async cleanupTransient() {
+    for (const name of await readdir(this.root)) {
+      if (!/^(fetch|scan)-[a-f0-9-]{36}$/.test(name)) continue;
+      if (this.mode === 'local') await this.stopLocal(join(this.root, name));
+      else {
+        const ids = (
+          await runProcess('docker', [
+            'ps',
+            '-aq',
+            '--filter',
+            `name=^/${this.name(name)}$`,
+          ])
+        ).trim();
+        if (ids) await runProcess('docker', ['rm', '--force', this.name(name)]);
+      }
+      await rm(join(this.root, name), { recursive: true, force: true });
+    }
+  }
   async recover(job: Job) {
     if (this.mode === 'docker') {
       const name = this.name(job.id);
@@ -416,41 +581,7 @@ export class BuildRunner {
       ).trim();
       if (ids) await runProcess('docker', ['rm', '--force', name]);
     } else {
-      // Local child identity is recorded separately; an unconfirmed process keeps its slot.
-      const marker = join(this.directory(job.id), 'process');
-      try {
-        const [pid, started] = (await readFile(marker, 'utf8'))
-          .trim()
-          .split('\n');
-        requireValue(
-          pid !== 'pending' && pid && started,
-          '本机构建进程身份尚未确认，保留槽位待核对。',
-          503,
-        );
-        const data = { pid: Number(pid), started: started.trim() };
-        let actual = '';
-        try {
-          actual = (
-            await runProcess('ps', ['-p', String(data.pid), '-o', 'lstart='])
-          ).trim();
-        } catch (e) {
-          if (!(e instanceof Error) || !e.message.includes('退出码 1')) throw e;
-        }
-        if (actual === data.started) {
-          process.kill(-data.pid, 'SIGKILL');
-          await confirmGroupStopped(data.pid);
-        } else if (await groupAlive(data.pid)) {
-          throw new ExecutionUnconfirmedError(
-            '原任务进程组仍存在但身份无法确认，保留槽位。',
-          );
-        }
-        await rm(marker, { force: true });
-      } catch (e) {
-        if (
-          !['ENOENT', 'ESRCH'].includes((e as NodeJS.ErrnoException).code ?? '')
-        )
-          throw e;
-      }
+      await this.stopLocal(this.directory(job.id));
     }
     try {
       const files = JSON.parse(

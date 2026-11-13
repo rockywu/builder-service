@@ -51,7 +51,7 @@ interface ScannedHostKey {
 | `GET /ssh-keys`           | —                                                                      | 分页 `SshKey`                 |                                                                                                                                                                             |
 | `POST /ssh-keys`          | `{ name, mode: 'generate' }` 或 `{ name, mode: 'import', privateKey }` | `SshKey`                      | 生成：服务端生成 ed25519。导入：解析并校验为无口令 OpenSSH/PEM 私钥，导出公钥与指纹；带口令或格式错误返回 400「仅支持无口令的 OpenSSH 私钥」。私钥 ≤ 16 KB；RSA ≥ 2048 位。 |
 | `PATCH /ssh-keys/:id`     | `{ name, privateKey? }`                                                | `SshKey`                      | `privateKey` 仅允许 `source = 'imported'`，否则 400。更换后指纹更新。                                                                                                       |
-| `DELETE /ssh-keys/:id`    | —                                                                      | 204                           | 允许删除被引用的密钥：同事务内将引用项目的 `ssh_key_id` 置空。已排队任务的快照仍记旧 ID，拉取时明确失败「拉取凭据已删除」。                                                 |
+| `DELETE /ssh-keys/:id`    | —                                                                      | 204                           | 允许删除被引用的密钥：同事务内将引用项目的 `sshKeyId` 置空。已排队任务的快照仍记旧 ID，拉取时明确失败「拉取凭据已删除」。                                                   |
 | `GET /known-hosts`        | —                                                                      | 分页 `KnownHost`              |                                                                                                                                                                             |
 | `POST /known-hosts/scan`  | `{ host, port }`                                                       | `{ items: ScannedHostKey[] }` | 服务端 `ssh-keyscan`（参数数组、超时 10 s、走 Git 专用受限网络），**不保存**。拒绝私网/元数据地址解析结果需遵守部署出口策略。                                               |
 | `POST /known-hosts`       | `{ host, port, keys: ScannedHostKey[] }`                               | `KnownHost[]`                 | 服务端重新计算每条 `publicKey` 的指纹并与提交的 `fingerprint` 比对，不一致拒绝；同 host+port+keyType 已存在则覆盖。                                                         |
@@ -64,13 +64,13 @@ interface ScannedHostKey {
 
 ## 4. 存储
 
-- 新增表 `ssh_keys`、`known_hosts`；`projects` 增加可空列 `ssh_key_id`。
+- 新增表 `ssh_keys`、`known_hosts`，数据库版本迁移至 4。项目沿用现有 JSON payload，增加可空字段 `sshKeyId`；删除密钥与清空项目引用在同一事务完成。列表批量读取项目与密钥后在内存组合，不使用联表查询。
 - 私钥用 AES-256-GCM 加密（每条随机 nonce，存 `nonce + ciphertext + tag`），主密钥来自环境变量 `BUILDER_SECRET_KEY`（32 字节 base64）。缺失或长度错误时：密钥相关接口返回 503 并说明原因，其余功能正常；不得回退为明文存储。
 - `.env.example` 和 `docs/runtime.md` 补充 `BUILDER_SECRET_KEY` 的生成与备份说明（丢失主密钥 = 所有私钥不可用，需要重新生成/导入）。备份包含数据库但主密钥单独保管。
 
 ## 5. 执行（`apps/server/src/tools/runner.ts`、`process.ts`）
 
-现状：`cleanEnvironment()` 和 Docker `--env` 中的 `GIT_SSH_COMMAND` 使用 `IdentityFile=none` 与 `UserKnownHostsFile=/dev/null`，SSH 拉取必然失败。改为：
+远端 Git 步骤使用项目绑定的密钥；其他命令继续使用禁用默认身份文件的环境：
 
 1. 涉及远端的 git 步骤（`fetch()` 中的 `ls-remote` 与 `fetch`，`execute()` 中的 `fetch`）在**任务源码目录之外**创建 `0700` 临时目录，写入解密私钥（`0600`）和由 `known_hosts` 表生成的文件（`[host]:port` 格式）。
 2. `GIT_SSH_COMMAND=ssh -F /dev/null -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -i <dir>/id -o UserKnownHostsFile=<dir>/known_hosts -o StrictHostKeyChecking=yes`，经参数数组/环境变量传入，不拼接 shell。

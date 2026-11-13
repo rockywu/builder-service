@@ -14,6 +14,14 @@ export const cleanEnvironment = () => ({
 });
 
 export class ExecutionUnconfirmedError extends Error {}
+export class ProcessExitError extends Error {
+  constructor(
+    public readonly exitCode: number | null,
+    public readonly output: string,
+  ) {
+    super(`命令执行失败（退出码 ${exitCode}）。`);
+  }
+}
 export async function groupAlive(pgid: number): Promise<boolean> {
   return new Promise((resolve, reject) =>
     execFile(
@@ -57,6 +65,7 @@ export function runProcess(
     maxBytes?: number;
     markerDirectory?: string;
     homeDirectory?: string;
+    gitSshCommand?: string;
     output?: (text: string, error: boolean) => void;
   } = {},
 ): Promise<string> {
@@ -82,6 +91,9 @@ export function runProcess(
         env: {
           ...cleanEnvironment(),
           ...(options.homeDirectory ? { HOME: options.homeDirectory } : {}),
+          ...(options.gitSshCommand
+            ? { GIT_SSH_COMMAND: options.gitSshCommand }
+            : {}),
         },
         stdio: ['ignore', 'pipe', 'pipe'],
         detached: process.platform !== 'win32',
@@ -150,8 +162,7 @@ export function runProcess(
       }
       if (marker) rmSync(marker, { force: true });
       if (failure) reject(failure);
-      else if (code !== 0)
-        reject(new Error(`命令执行失败（退出码 ${code}）。`));
+      else if (code !== 0) reject(new ProcessExitError(code, text));
       else resolve(text);
     });
   });

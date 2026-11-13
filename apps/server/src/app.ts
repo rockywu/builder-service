@@ -3,6 +3,7 @@ import type { AppConfig } from './config.js';
 import { registerPlatform } from './modules/platform/routes.js';
 import type { DatabaseClient } from './db/client.js';
 import { registerAuth } from './modules/auth/routes.js';
+import { PlatformError } from './modules/platform/errors.js';
 
 export async function createApp(config: AppConfig, database: DatabaseClient) {
   const app = Fastify({
@@ -13,6 +14,7 @@ export async function createApp(config: AppConfig, database: DatabaseClient) {
         'req.headers.authorization',
         'res.headers["set-cookie"]',
         'req.body.password',
+        'req.body.privateKey',
       ],
     },
     bodyLimit: 1024 * 1024,
@@ -23,7 +25,7 @@ export async function createApp(config: AppConfig, database: DatabaseClient) {
     const status = failure.statusCode ?? 500;
     reply.code(status).send({
       message:
-        status >= 500
+        status >= 500 && !(error instanceof PlatformError)
           ? '服务暂不可用，请核对操作结果后重试。'
           : (failure.message ?? '请求失败。'),
     });

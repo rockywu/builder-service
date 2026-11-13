@@ -10,6 +10,8 @@ import { requireValue } from './errors.js';
 import { relativePath, syncDirectory } from '../../tools/paths.js';
 import type { DatabaseClient } from '../../db/client.js';
 import type { AppConfig } from '../../config.js';
+import { normalizeHost, publicAddresses, sshHostOf } from '../../tools/ssh.js';
+import type { SshKey, ScannedHostKey } from './types.js';
 
 const testStatuses = ['passed', 'pending', 'testing', 'rejected'];
 const actor = (r: FastifyRequest) => r.sessionContext!.user;
@@ -144,6 +146,135 @@ export async function registerPlatform(
       nextOffset: Math.min(rows.length, offset + limit),
     };
   }
+  function sshAdmin(r: FastifyRequest) {
+    admin(r);
+    service.ssh.secret();
+  }
+  function keyName(value: unknown) {
+    const name = text(value, '密钥名称', 1, 40).trim();
+    requireValue(!/[\x00-\x1f\x7f]/.test(name), '密钥名称格式无效。');
+    return name;
+  }
+  function hostInput(r: FastifyRequest) {
+    const body = object(r.body);
+    return {
+      body,
+      host: normalizeHost(body.host),
+      port: integer(body.port ?? 22, 1, 65535, '端口'),
+    };
+  }
+  app.get('/api/ssh-keys', async (r) => {
+    sshAdmin(r);
+    return paginate(await list<SshKey[]>('sshKeys', r), r);
+  });
+  app.post('/api/ssh-keys', { bodyLimit: 24 * 1024 }, async (r) => {
+    sshAdmin(r);
+    const body = object(r.body),
+      name = keyName(body.name);
+    requireValue(
+      body.mode === 'generate' || body.mode === 'import',
+      '密钥创建方式无效。',
+    );
+    const material = await service.ssh.keyMaterial(
+      name,
+      body.mode,
+      body.privateKey,
+    );
+    return service.command(
+      'saveSshKey',
+      { input: { name, ...material } },
+      actor(r),
+    );
+  });
+  app.patch('/api/ssh-keys/:id', { bodyLimit: 24 * 1024 }, async (r) => {
+    sshAdmin(r);
+    const body = object(r.body),
+      name = keyName(body.name);
+    const key = (await list<SshKey[]>('sshKeys', r)).find(
+      (k) => k.id === id(r),
+    );
+    requireValue(key, '密钥不存在。', 404);
+    requireValue(
+      body.privateKey === undefined || key.source === 'imported',
+      '服务端生成的密钥不能更换私钥。',
+    );
+    const material =
+      body.privateKey === undefined
+        ? {}
+        : await service.ssh.keyMaterial(name, 'import', body.privateKey);
+    return service.command(
+      'saveSshKey',
+      { id: key.id, input: { name, ...material } },
+      actor(r),
+    );
+  });
+  app.delete('/api/ssh-keys/:id', async (r, reply) => {
+    sshAdmin(r);
+    await service.command('deleteSshKey', { id: id(r) }, actor(r));
+    return reply.code(204).send();
+  });
+  app.get('/api/known-hosts', async (r) => {
+    sshAdmin(r);
+    return paginate(await list<unknown[]>('knownHosts', r), r);
+  });
+  app.post('/api/known-hosts/scan', async (r) => {
+    sshAdmin(r);
+    const { host, port } = hostInput(r);
+    const addresses = await publicAddresses(host);
+    const output = await service.runner.scanHost(addresses, port);
+    const keys = new Map<string, ScannedHostKey>();
+    for (const line of output
+      .split('\n')
+      .filter((s) => s && !s.startsWith('#'))) {
+      const fields = line.trim().split(/\s+/);
+      requireValue(fields.length === 3, '主机返回了无效公钥。');
+      const { bits: _bits, ...key } = await service.ssh.publicKey(
+        `${fields[1]} ${fields[2]}`,
+      );
+      requireValue(
+        !keys.has(key.keyType) ||
+          keys.get(key.keyType)!.fingerprint === key.fingerprint,
+        '同一主机的多个地址返回了不同公钥，请核对。',
+      );
+      keys.set(key.keyType, key);
+    }
+    requireValue(
+      keys.size,
+      '主机未返回 SSH 公钥，请检查地址、端口和出口策略。',
+    );
+    return { items: [...keys.values()] };
+  });
+  app.post('/api/known-hosts', async (r) => {
+    sshAdmin(r);
+    const { body, host, port } = hostInput(r);
+    requireValue(
+      Array.isArray(body.keys) && body.keys.length > 0 && body.keys.length <= 5,
+      '请选择 1–5 条主机公钥。',
+    );
+    const keys: ScannedHostKey[] = [];
+    for (const value of body.keys) {
+      const supplied = object(value);
+      const { bits: _bits, ...key } = await service.ssh.publicKey(
+        supplied.publicKey,
+      );
+      requireValue(
+        supplied.keyType === key.keyType &&
+          supplied.fingerprint === key.fingerprint,
+        '主机公钥指纹不一致，请重新扫描。',
+      );
+      requireValue(
+        !keys.some((k) => k.keyType === key.keyType),
+        '同一算法只能信任一条主机公钥。',
+      );
+      keys.push(key);
+    }
+    return service.command('saveKnownHosts', { host, port, keys }, actor(r));
+  });
+  app.delete('/api/known-hosts/:id', async (r, reply) => {
+    sshAdmin(r);
+    await service.command('deleteKnownHost', { id: id(r) }, actor(r));
+    return reply.code(204).send();
+  });
   app.get('/api/projects', async (r) =>
     paginate(await list<Project[]>('projects', r), r),
   );
@@ -214,6 +345,7 @@ export async function registerPlatform(
       '仓库地址仅支持 git@、ssh://、https://。',
     );
     const u = repository.startsWith('git@') ? null : new URL(repository);
+    sshHostOf(repository);
     requireValue(
       !u || (!u.password && (u.protocol !== 'https:' || !u.username)),
       '仓库地址不能内嵌凭据。',
@@ -235,6 +367,10 @@ export async function registerPlatform(
       name: text(body.name, '项目名称', 1, 40).trim(),
       description: text(body.description ?? '', '描述', 0, 120),
       repository,
+      sshKeyId:
+        body.sshKeyId == null
+          ? null
+          : integer(body.sshKeyId, 1, Number.MAX_SAFE_INTEGER, 'SSH 密钥编号'),
       defaultBranch: branch(body.defaultBranch),
       workdir: body.workdir,
       buildScript: script,
@@ -255,17 +391,34 @@ export async function registerPlatform(
     saveProject(r, id(r)),
   );
   const fetching = new Set<number>();
+  app.delete('/api/projects/:id', async (r) => {
+    admin(r);
+    const projectId = id(r);
+    requireValue(
+      !fetching.has(projectId),
+      '项目正在拉取代码，请稍后重试删除。',
+      409,
+    );
+    await service.deleteProject(projectId, actor(r));
+    return { ok: true };
+  });
   app.post('/api/projects/:id/fetch', async (r) => {
     const projectId = id(r);
     requireValue(!fetching.has(projectId), '该项目正在拉取，请稍后重试。', 409);
     fetching.add(projectId);
     try {
       const p = await service.command<Project>('project', { id: projectId });
+      requireValue(!p.deleting, '项目正在删除，不能拉取代码。', 409);
       const b = branch(object(r.body).branch);
       const result = await service.runner.fetch(p, b);
       return service.command(
         'fetched',
-        { id: projectId, repository: p.repository, ...result },
+        {
+          id: projectId,
+          repository: p.repository,
+          sshKeyId: p.sshKeyId,
+          ...result,
+        },
         actor(r),
       );
     } finally {
@@ -449,22 +602,24 @@ export async function registerPlatform(
   });
   app.get('/api/public/projects', async () => {
     const state = await service.command<State>('list');
-    return state.projects.map((p) => {
-      const releases = state.releases
-        .filter((x) => x.projectId === p.id)
-        .sort((a, b) => b.createdAt - a.createdAt || b.jobId - a.jobId);
-      return {
-        ...publicProject(p),
-        releaseCount: releases.length,
-        latestRelease: releases[0] ? publicRelease(releases[0]) : null,
-      };
-    });
+    return state.projects
+      .filter((p) => !p.deleting)
+      .map((p) => {
+        const releases = state.releases
+          .filter((x) => x.projectId === p.id)
+          .sort((a, b) => b.createdAt - a.createdAt || b.jobId - a.jobId);
+        return {
+          ...publicProject(p),
+          releaseCount: releases.length,
+          latestRelease: releases[0] ? publicRelease(releases[0]) : null,
+        };
+      });
   });
   app.get('/api/public/projects/:slug/releases', async (r) => {
     const slug = text(object(r.params).slug, '项目标识', 1, 200),
       q = object(r.query);
     const state = await service.command<State>('list');
-    const p = state.projects.find((x) => x.slug === slug);
+    const p = state.projects.find((x) => x.slug === slug && !x.deleting);
     requireValue(p, '项目不存在。', 404);
     const status = String(q.status ?? 'all');
     requireValue(
