@@ -8,7 +8,13 @@ Node.js 24 / npm 11，系统需提供 Git、Bash、Node.js、OpenSSH 客户端�
 
 ```bash
 npm ci
-cp apps/server/.env.example apps/server/.env
+cp -n apps/server/.env.template apps/server/.env
+chmod 600 apps/server/.env
+```
+
+首次初始化时执行 `openssl rand -base64 32`，将结果填入 `apps/server/.env` 的 `BUILDER_SECRET_KEY` 后再启动；已有配置或恢复数据库时保留原主密钥。模板用于说明变量，服务实际读取 `.env`，两者的关系与完整启动步骤见 [README](../README.md#环境与启动)。
+
+```bash
 npm run dev
 ```
 

@@ -9,13 +9,44 @@
 
 ## 环境与启动
 
-需要 Node.js 24 LTS 和 npm 11。`better-sqlite3` 包含原生模块，需在目标操作系统安装依赖；没有匹配预编译包时，需要 Python、C/C++ 编译器及系统构建工具。
+需要 Node.js 24 LTS 和 npm 11，以及 Git、Bash、OpenSSH 客户端和 OpenSSL。`better-sqlite3` 包含原生模块，需在目标操作系统安装依赖；没有匹配预编译包时，需要 Python、C/C++ 编译器及系统构建工具。以下命令均在仓库根目录执行。
+
+### 首次配置
+
+安装依赖并创建本地配置。已有 `.env` 时跳过复制，保留原有配置和主密钥；`cp -n` 用于避免覆盖已有文件。
 
 ```bash
 npm ci
-cp apps/server/.env.example apps/server/.env
+cp -n apps/server/.env.template apps/server/.env
+chmod 600 apps/server/.env
+```
+
+首次初始化时，生成独立的 SSH 私钥加密主密钥：
+
+```bash
+openssl rand -base64 32
+```
+
+将生成结果填入 `apps/server/.env` 的 `BUILDER_SECRET_KEY=` 后并保存，再启动服务。模板中的该项刻意留空，不提供共用密钥。恢复已有数据库时必须使用原主密钥，不要重新生成。
+
+### `.env.template` 与 `.env` 的关系
+
+- `apps/server/.env.template` 是提交到仓库的配置模板，提供变量说明和本机开发默认值，不包含真实密钥，服务不会直接读取它。
+- `apps/server/.env` 是从模板复制并填写后的实际运行配置，由后端启动命令读取，已被 Git 忽略，不得提交。请放在 `apps/server` 下，根目录的 `.env` 不会被当前启动命令读取。
+- 模板更新不会自动同步到已有 `.env`，需手动补充新增变量。旧的 `.env.example` 仅为兼容保留，新环境统一使用 `.env.template`。
+- `BUILDER_SECRET_KEY` 必须是 32 字节随机值的 base64 编码，重启和更新代码时保持不变，并与数据库备份分开保管。丢失或替换后，已有 SSH 私钥将无法解密。
+
+### 启动与检查
+
+配置完成后启动前后端；后续启动直接运行此命令即可：
+
+```bash
 npm run dev
 ```
+
+浏览器打开 `http://127.0.0.1:5173/`，后端健康检查为 `http://127.0.0.1:3000/api/health`。使用 `127.0.0.1` 访问以匹配默认 `APP_ORIGIN`；如改用 `localhost` 或其他端口，需同步调整 `.env` 中的 `APP_ORIGIN`。修改 `.env` 后停止并重新运行 `npm run dev` 才会生效。
+
+若 SSH 密钥或受信任主机列表提示 `BUILDER_SECRET_KEY 缺失或无效`，检查实际 `.env` 中的主密钥是否已填写且格式正确，并重启后端。健康检查正常仅说明 API 已启动，缺少主密钥时这两项功能仍会返回 503。
 
 ### UI 与 API
 
