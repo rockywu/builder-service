@@ -26,6 +26,7 @@ import { runProcess } from '../dist/tools/process.js';
 import { collectArtifacts, safePath } from '../dist/tools/paths.js';
 import {
   buildDirectoryName,
+  versionOutput,
   resolveBuildDirectory,
 } from '../dist/tools/build-directory.js';
 const exec = promisify(execFile),
@@ -181,7 +182,9 @@ async function gitFixture(f, t) {
   ]);
   await exec('git', ['-C', repo, 'checkout', 'main']);
   await exec('git', ['clone', '--bare', repo, join(f.directory, 'repo.git')]);
+  let requests = 0;
   const server = createServer((req, res) => {
+    requests++;
     const u = new URL(req.url, 'http://127.0.0.1');
     const child = spawn('git', ['http-backend'], {
       env: {
@@ -228,7 +231,11 @@ async function gitFixture(f, t) {
   });
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   t.after(() => new Promise((r) => server.close(r)));
-  return { url: `http://127.0.0.1:${server.address().port}/repo.git`, repo };
+  return {
+    url: `http://127.0.0.1:${server.address().port}/repo.git`,
+    repo,
+    requests: () => requests,
+  };
 }
 async function setupProject(f, s, git, patch = {}) {
   const p = await ok(f, s, 'POST', '/api/projects', { ...input, ...patch });
@@ -256,6 +263,194 @@ async function enqueue(f, s, p, branch = 'main') {
 }
 const getJobs = async (f) =>
   (await f.app.inject({ url: '/api/health' })).json();
+
+test(
+  'optional test pull does not pin a commit; queued branch and same-named tag use isolated live checkouts',
+  { timeout: 30000 },
+  async (t) => {
+    const f = await fixture(t),
+      s = await login(f),
+      git = await gitFixture(f, t);
+    const bare = join(f.directory, 'repo.git');
+    const tagCommit = (
+      await exec('git', ['-C', git.repo, 'rev-parse', 'other'])
+    ).stdout.trim();
+    await exec('git', [
+      '-C',
+      git.repo,
+      '-c',
+      'user.name=Fixture',
+      '-c',
+      'user.email=fixture@example.invalid',
+      'tag',
+      '-a',
+      'main',
+      'other',
+      '-m',
+      'annotated main tag',
+    ]);
+    await exec('git', ['-C', git.repo, 'push', bare, 'refs/tags/main']);
+    const p = await setupProject(f, s, git, {
+      defaultBranch: undefined,
+      buildScript:
+        'mkdir -p dist\ncp marker.txt dist/result.txt\nprintf " stale local change" >> marker.txt',
+    });
+    assert.deepEqual(p.branches, []);
+    const testUrl = `/api/projects/${p.id}/test-fetch`;
+    const selected = { branch: 'main', refType: 'branch' };
+    assert.equal(
+      (await call(f, null, 'POST', testUrl, selected, { origin })).statusCode,
+      401,
+    );
+    assert.equal(
+      (await call(f, s, 'POST', testUrl, selected, { 'x-csrf-token': '' }))
+        .statusCode,
+      403,
+    );
+    const probe = await ok(f, s, 'POST', testUrl, selected);
+    assert.deepEqual(probe, {
+      ok: true,
+      branches: ['main', 'other'],
+      tags: ['main'],
+    });
+    const missingTest = await call(f, s, 'POST', testUrl, {
+      branch: 'other',
+      refType: 'tag',
+    });
+    assert.equal(missingTest.statusCode, 404);
+    assert.equal(
+      (
+        await call(f, s, 'POST', testUrl, {
+          branch: '../main',
+          refType: 'branch',
+        })
+      ).statusCode,
+      400,
+    );
+    const project = await f.db.request('platform', {
+      action: 'project',
+      data: { id: p.id },
+    });
+    assert.equal(project.fetched.at, 0);
+    assert.deepEqual(await readdir(join(f.config.dataDirectory, 'builds')), []);
+
+    // Hold the only slot so the branch can move after the job is actually queued.
+    const blocker = await f.db.request('platform', {
+      action: 'enqueue',
+      actor: s.user,
+      data: { projectId: p.id, ...selected, key: randomUUID(), hash: 'slot' },
+    });
+    assert.equal(
+      (await f.db.request('platform', { action: 'claim' })).id,
+      blocker.id,
+    );
+    const request = { projectId: p.id, ...selected };
+    const headers = { 'idempotency-key': randomUUID() };
+    const branchJob = await ok(f, s, 'POST', '/api/jobs', request, headers);
+    const tagJob = await ok(
+      f,
+      s,
+      'POST',
+      '/api/jobs',
+      { ...request, refType: 'tag' },
+      { 'idempotency-key': randomUUID() },
+    );
+    assert.equal(branchJob.sha, '');
+    assert.equal(
+      (await ok(f, s, 'POST', '/api/jobs', request, headers)).id,
+      branchJob.id,
+    );
+    assert.equal(
+      (
+        await call(
+          f,
+          s,
+          'POST',
+          '/api/jobs',
+          { ...request, refType: 'tag' },
+          headers,
+        )
+      ).statusCode,
+      409,
+    );
+    const deletedJob = await ok(
+      f,
+      s,
+      'POST',
+      '/api/jobs',
+      { projectId: p.id, branch: 'other', refType: 'branch' },
+      { 'idempotency-key': randomUUID() },
+    );
+    await writeFile(join(git.repo, 'marker.txt'), 'latest main');
+    await exec('git', [
+      '-C',
+      git.repo,
+      '-c',
+      'user.name=Fixture',
+      '-c',
+      'user.email=fixture@example.invalid',
+      'commit',
+      '-am',
+      'moved after queueing',
+    ]);
+    const latest = (
+      await exec('git', ['-C', git.repo, 'rev-parse', 'refs/heads/main'])
+    ).stdout.trim();
+    await exec('git', ['-C', git.repo, 'push', bare, 'refs/heads/main']);
+    await exec('git', [
+      '--git-dir',
+      bare,
+      'update-ref',
+      '-d',
+      'refs/heads/other',
+    ]);
+    await f.db.request('platform', {
+      action: 'finish',
+      data: { id: blocker.id, status: 'failed' },
+    });
+    await until(
+      () => ok(f, s, 'GET', `/api/jobs/${deletedJob.id}`),
+      (j) => j.status === 'failed',
+    );
+    const failed = await ok(f, s, 'GET', `/api/jobs/${deletedJob.id}`);
+    assert.match(failed.error, /分支或标签已不存在/);
+    assert.equal(failed.sha, '');
+    const releases = (await ok(f, s, 'GET', '/api/releases')).items;
+    assert.equal(releases.length, 2);
+    for (const [j, sha, content] of [
+      [branchJob, latest, 'latest main'],
+      [tagJob, tagCommit, 'other'],
+    ]) {
+      const built = await ok(f, s, 'GET', `/api/jobs/${j.id}`);
+      assert.equal(built.sha, sha);
+      assert.equal(built.status, 'succeeded');
+      assert.equal(built.refType, j.refType);
+      const release = releases.find((r) => r.jobId === j.id);
+      assert.equal(release.sha, sha);
+      assert.equal(release.refType, j.refType);
+      const artifact = await call(
+        f,
+        null,
+        'GET',
+        `/api/public/artifacts/${release.artifacts[0].id}/download`,
+      );
+      assert.equal(artifact.body, content);
+      await access(
+        join(
+          f.config.dataDirectory,
+          'builds',
+          buildDirectoryName(j),
+          'build.log',
+        ),
+      );
+    }
+    await f.restart();
+    const stillPublished = (await ok(f, s, 'GET', '/api/releases')).items;
+    assert.equal(stillPublished.length, 2);
+    await ok(f, s, 'DELETE', `/api/projects/${p.id}`);
+    assert.deepEqual(await readdir(join(f.config.dataDirectory, 'builds')), []);
+  },
+);
 
 test(
   'real Git → queue (2 slots / 5 jobs), Bash + Node → artifacts → anonymous download; branch isolation, revision conflict and physical delete',
@@ -294,12 +489,12 @@ test(
     assert.ok(
       snapshot.every((j) => j.snapshot.buildScript.includes('copyFileSync')),
     );
-    assert.equal(snapshot.filter((j) => j.status === 'running').length, 2);
-    assert.equal(snapshot.filter((j) => j.status === 'queued').length, 3);
+    assert.equal(snapshot.filter((j) => j.status === 'running').length, 1);
+    assert.equal(snapshot.filter((j) => j.status === 'queued').length, 4);
     // Lowering the cap keeps existing jobs alive and stops replacement until occupancy drops.
     await ok(f, s, 'PUT', '/api/settings', { maxConcurrent: 1 });
     const queue = await ok(f, s, 'GET', '/api/queue');
-    assert.equal(queue.occupied, 2);
+    assert.equal(queue.occupied, 1);
     await ok(f, s, 'PUT', '/api/settings', { maxConcurrent: 2 });
     let max = 0;
     const final = await until(
@@ -315,10 +510,10 @@ test(
       (rows) => rows.every((j) => j.status === 'succeeded'),
       40000,
     );
-    assert.equal(max, 2);
+    assert.equal(max, 1);
     const ordered = [...final].sort((a, b) => a.seq - b.seq);
     for (let n = 1; n < ordered.length; n++)
-      assert.ok(ordered[n].startedAt >= ordered[n - 1].startedAt);
+      assert.ok(ordered[n].startedAt >= ordered[n - 1].finishedAt);
     const p2 = await setupProject(f, s, git, {
       name: 'Other',
       buildScript: 'npm ci --offline --ignore-scripts\nnpm run build',
@@ -387,7 +582,7 @@ test(
     const releasedDirectory = await jobDirectory(f, rel.jobId);
     assert.ok(
       (await readdir(join(f.config.dataDirectory, 'builds'))).includes(
-        `repo--main--${fetched.sha.slice(0, 8)}--job-${rel.jobId}`,
+        `project-${rel.projectId}`,
       ),
     );
     await ok(f, s, 'DELETE', `/api/releases/${rel.id}`);
@@ -442,11 +637,7 @@ test(
         (j) => j.id === state.releases[0].jobId,
       );
       const content = await readFile(
-        join(
-          await resolveBuildDirectory(join(restored, 'builds'), restoredJob),
-          'artifacts',
-          '0',
-        ),
+        join(versionOutput(join(restored, 'builds'), restoredJob), a.name),
       );
       assert.equal(
         createHash('sha256').update(content).digest('hex'),
@@ -458,7 +649,13 @@ test(
     // A damaged published artifact must disappear from anonymous listings after restart.
     const published = (await ok(f, again, 'GET', '/api/releases')).items[0];
     await writeFile(
-      join(await jobDirectory(f, published.jobId), 'artifacts', '0'),
+      join(
+        versionOutput(join(f.config.dataDirectory, 'builds'), {
+          id: published.jobId,
+          projectId: published.projectId,
+        }),
+        published.artifacts[0].name,
+      ),
       'tampered',
     );
     await f.restart();
@@ -713,8 +910,12 @@ test(
     const p = await ok(f, s, 'POST', '/api/projects', { ...input, icon: data });
     assert.match(p.icon, /^\/api\/public\/icons\/[a-f0-9-]+\.png$/);
     assert.equal((await call(f, null, 'GET', p.icon)).statusCode, 200);
-    const retained = await ok(f, s, 'PUT', `/api/projects/${p.id}`, input);
+    const retained = await ok(f, s, 'PUT', `/api/projects/${p.id}`, {
+      ...input,
+      defaultBranch: undefined,
+    });
     assert.equal(retained.icon, p.icon);
+    assert.equal(retained.defaultBranch, p.defaultBranch);
     const cleared = await ok(f, s, 'PUT', `/api/projects/${p.id}`, {
       ...input,
       icon: null,
@@ -769,8 +970,14 @@ test(
     );
     await assert.rejects(access(oldIconFile), { code: 'ENOENT' });
     // A previously interrupted upload can still leave an unreferenced icon.
-    const orphanIcon = join(f.config.dataDirectory, 'icons', `${randomUUID()}.png`);
-    await writeFile(orphanIcon, await readFile(referencedFile), { mode: 0o600 });
+    const orphanIcon = join(
+      f.config.dataDirectory,
+      'icons',
+      `${randomUUID()}.png`,
+    );
+    await writeFile(orphanIcon, await readFile(referencedFile), {
+      mode: 0o600,
+    });
     await utimes(orphanIcon, old, old);
     await utimes(referencedFile, old, old);
     // Pause the live scheduler by closing the HTTP app, then seed interrupted DB state.
@@ -1092,5 +1299,104 @@ test(
     assert.equal(releases.length, 1);
     assert.equal(releases[0].jobId, queued.id);
     await stop('SIGTERM');
+  },
+);
+
+test(
+  'project workspace reuses the selected commit offline and cleans ignored files on fresh builds',
+  { timeout: 60000 },
+  async (t) => {
+    const f = await fixture(t),
+      s = await login(f),
+      git = await gitFixture(f, t);
+    const push = async () => {
+      await exec('git', ['-C', git.repo, 'add', '.']);
+      await exec('git', [
+        '-C',
+        git.repo,
+        '-c',
+        'user.name=Fixture',
+        '-c',
+        'user.email=test@example.invalid',
+        'commit',
+        '-m',
+        'cache fixture',
+      ]);
+      await exec('git', [
+        '-C',
+        git.repo,
+        'push',
+        join(f.directory, 'repo.git'),
+        'main',
+      ]);
+    };
+    await writeFile(join(git.repo, '.gitignore'), 'node_modules/\ndist/\n');
+    await push();
+    const p = await setupProject(f, s, git, {
+      buildScript: [
+        'mkdir -p dist',
+        'if test -e node_modules/dependency && test -e "$HOME/pkg-cache"; then echo warm; else echo cold; fi >dist/result',
+        'cat marker.txt >>dist/result',
+        'if test -e keep.local; then echo kept >>dist/result; fi',
+        'mkdir -p node_modules; touch node_modules/dependency "$HOME/pkg-cache" keep.local',
+        'git rev-parse HEAD > dist/sha',
+        'cp dist/result dist/sha "$OUTPUT_DIR/"',
+        'echo exclude-me >dist/not-published',
+        'echo dirty >>marker.txt',
+      ].join('\n'),
+    });
+    const build = async (useCache, expected) => {
+      const j = await ok(
+        f,
+        s,
+        'POST',
+        '/api/jobs',
+        { projectId: p.id, refType: 'branch', branch: 'main', useCache },
+        { 'idempotency-key': randomUUID() },
+      );
+      const done = await until(
+        () => ok(f, s, 'GET', `/api/jobs/${j.id}`),
+        (x) => ['succeeded', 'failed'].includes(x.status),
+      );
+      assert.equal(done.status, 'succeeded', done.error);
+      const dir = await jobDirectory(f, j.id);
+      const manifest = JSON.parse(
+        await readFile(join(dir, 'manifest.json'), 'utf8'),
+      );
+      assert.deepEqual(manifest.map((x) => x.name).sort(), ['result', 'sha']);
+      const file = (n) =>
+        join(
+          versionOutput(join(f.config.dataDirectory, 'builds'), j),
+          manifest.find((a) => a.name === n).name,
+        );
+      assert.equal(await readFile(file('result'), 'utf8'), expected);
+      assert.equal((await readFile(file('sha'), 'utf8')).trim(), done.sha);
+      await assert.rejects(access(join(dir, 'source')), { code: 'ENOENT' });
+      return { sha: done.sha, dir, file: file('result'), id: j.id };
+    };
+    const first = await build(true, 'cold\nmain');
+    await writeFile(join(git.repo, 'marker.txt'), 'updated\n');
+    await push();
+    const before = git.requests();
+    const second = await build(true, 'warm\nmainkept\n');
+    assert.equal(first.sha, second.sha);
+    assert.equal(git.requests(), before);
+    const root = join(f.config.dataDirectory, 'builds', `project-${p.id}`);
+    await access(join(root, 'source', 'marker.txt'));
+    assert.deepEqual(await readdir(join(root, 'outputs', String(second.id))), [
+      'result',
+      'sha',
+    ]);
+    const third = await build(false, 'cold\nupdated\nkept\n');
+    assert.notEqual(third.sha, second.sha);
+    assert.ok(git.requests() > before);
+    assert.equal(await readFile(first.file, 'utf8'), 'cold\nmain');
+    assert.deepEqual(await readdir(join(f.config.dataDirectory, 'builds')), [
+      `project-${p.id}`,
+    ]);
+    await ok(f, s, 'DELETE', `/api/jobs/${first.id}`);
+    assert.equal((await build(true, 'warm\nupdated\nkept\n')).sha, third.sha);
+    await ok(f, s, 'DELETE', `/api/projects/${p.id}`);
+    assert.deepEqual(await readdir(join(f.config.dataDirectory, 'builds')), []);
   },
 );

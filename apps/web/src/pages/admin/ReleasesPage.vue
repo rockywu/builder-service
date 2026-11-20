@@ -189,6 +189,8 @@ function demoDownload(file: Artifact) {
       <el-table-column label="来源" min-width="160">
         <template #default="{ row }">
           <span class="font-mono text-xs text-slate-600"
+            ><span v-if="row.refType === 'tag'" class="text-slate-500"
+              >标签：</span
             >{{ row.branch }}<span class="text-slate-400">@</span
             >{{ shortSha(row.sha) }}</span
           >

@@ -31,7 +31,7 @@ export async function confirmDeleteJob(job: Job) {
     job.status === 'queued'
       ? ['从构建队列移除', '任务记录及配置快照']
       : [
-          '该任务独立克隆的源码与依赖目录',
+          '任务专属文件（项目共享源码和依赖保留）',
           '构建日志与临时文件',
           ...(release
             ? [
@@ -62,7 +62,7 @@ export async function confirmDeleteRelease(release: Release) {
     target: `${projectName(release.projectId)} · ${release.version}`,
     scope: [
       `${release.artifacts.length} 个产物文件（公开下载立即失效）`,
-      '对应构建任务、日志与源码副本',
+      '对应构建任务、日志及任务专属文件',
       '测试状态变更记录',
     ],
   });

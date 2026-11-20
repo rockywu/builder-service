@@ -4,6 +4,7 @@ import type {
   ProjectInput,
   Job,
   JobStatus,
+  GitRefType,
   Release,
   User,
   Role,
@@ -180,25 +181,24 @@ export async function saveProject(input: ProjectInput, id?: number) {
 export async function deleteProject(id: number) {
   return mutation<{ ok: boolean }>(`/projects/${id}`, 'DELETE');
 }
-export async function fetchCode(projectId: number, branch: string) {
-  const result = await mutation<Project['fetched']>(
-    `/projects/${projectId}/fetch`,
-    'POST',
-    { branch },
+export function testFetch(
+  projectId: number,
+  branch: string,
+  refType: GitRefType,
+) {
+  return request<{ ok: true; branches: string[]; tags: string[] }>(
+    `/projects/${projectId}/test-fetch`,
+    { method: 'POST', body: { branch, refType } },
   );
-  const p = db.projects.find((p) => p.id === projectId);
-  if (p) p.fetched = result;
-  return result;
 }
 const enqueueKeys = new Map<string, { projectId: number; key: string }>();
 export async function enqueueBuild(
   projectId: number,
   branch: string,
-  sha: string,
-  _message: string,
-  _by: string,
+  refType: GitRefType,
+  useCache: boolean,
 ) {
-  const input = { projectId, branch, sha },
+  const input = { projectId, branch, refType, useCache },
     signature = JSON.stringify(input);
   const key = enqueueKeys.get(signature)?.key ?? crypto.randomUUID();
   enqueueKeys.set(signature, { projectId, key });

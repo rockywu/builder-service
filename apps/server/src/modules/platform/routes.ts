@@ -5,7 +5,14 @@ import sharp from 'sharp';
 import { hashPassword } from '../auth/password.js';
 import { PlatformService } from './service.js';
 import type { State } from './service.js';
-import type { Job, Project, ProjectInput, Release, User } from './types.js';
+import type {
+  GitRefType,
+  Job,
+  Project,
+  ProjectInput,
+  Release,
+  User,
+} from './types.js';
 import { requireValue } from './errors.js';
 import { relativePath, syncDirectory } from '../../tools/paths.js';
 import type { DatabaseClient } from '../../db/client.js';
@@ -47,15 +54,22 @@ function branch(value: unknown) {
   const b = text(value, '分支', 1, 200);
   requireValue(
     !b.startsWith('-') &&
-      !/[\s~^:?*\[\\]/.test(b) &&
+      !/[\s~^:?*\[\\\x00-\x1f\x7f]/.test(b) &&
       !b.includes('..') &&
       !b.includes('@{') &&
-      !b.endsWith('/') &&
       !b.endsWith('.') &&
-      !b.endsWith('.lock'),
-    '分支格式无效。',
+      b
+        .split('/')
+        .every(
+          (part) => part && !part.startsWith('.') && !part.endsWith('.lock'),
+        ),
+    '分支或标签格式无效。',
   );
   return b;
+}
+function gitRefType(value: unknown): GitRefType {
+  requireValue(value === 'branch' || value === 'tag', '请选择分支或标签。');
+  return value;
 }
 function admin(r: FastifyRequest) {
   requireValue(actor(r).role === 'admin', '需要管理员权限。', 403);
@@ -66,6 +80,7 @@ const publicRelease = (r: Release) => ({
   projectId: r.projectId,
   version: r.version,
   branch: r.branch,
+  ...(r.refType ? { refType: r.refType } : {}),
   sha: r.sha,
   createdAt: r.createdAt,
   testStatus: r.testStatus,
@@ -368,7 +383,9 @@ export async function registerPlatform(
         body.sshKeyId == null
           ? null
           : integer(body.sshKeyId, 1, Number.MAX_SAFE_INTEGER, 'SSH 密钥编号'),
-      defaultBranch: branch(body.defaultBranch),
+      ...(body.defaultBranch === undefined
+        ? {}
+        : { defaultBranch: branch(body.defaultBranch) }),
       workdir: body.workdir,
       buildScript: script,
       artifactPath: body.artifactPath,
@@ -417,38 +434,70 @@ export async function registerPlatform(
     await service.deleteProject(projectId, actor(r));
     return { ok: true };
   });
-  app.post('/api/projects/:id/fetch', async (r) => {
+  async function withProjectFetch<T>(
+    r: FastifyRequest,
+    perform: (project: Project) => Promise<T>,
+  ) {
     const projectId = id(r);
     requireValue(!fetching.has(projectId), '该项目正在拉取，请稍后重试。', 409);
     fetching.add(projectId);
     try {
       const p = await service.command<Project>('project', { id: projectId });
       requireValue(!p.deleting, '项目正在删除，不能拉取代码。', 409);
-      const b = branch(object(r.body).branch);
-      const result = await service.runner.fetch(p, b);
+      return await perform(p);
+    } finally {
+      fetching.delete(projectId);
+    }
+  }
+  app.post('/api/projects/:id/test-fetch', (r) =>
+    withProjectFetch(r, (p) => {
+      const d = object(r.body);
+      return service.runner.testFetch(
+        p,
+        gitRefType(d.refType),
+        branch(d.branch),
+      );
+    }),
+  );
+  app.post('/api/projects/:id/fetch', (r) =>
+    withProjectFetch(r, async (p) => {
+      const result = await service.runner.fetch(
+        p,
+        branch(object(r.body).branch),
+      );
       return service.command(
         'fetched',
         {
-          id: projectId,
+          id: p.id,
           repository: p.repository,
           sshKeyId: p.sshKeyId,
           ...result,
         },
         actor(r),
       );
-    } finally {
-      fetching.delete(projectId);
-    }
-  });
+    }),
+  );
   app.post('/api/jobs', async (r) => {
     const d = object(r.body);
     const key = text(r.headers['idempotency-key'], '请求标识', 8, 128);
-    const data = {
+    requireValue(
+      d.useCache === undefined || typeof d.useCache === 'boolean',
+      '使用缓存必须为布尔值。',
+    );
+    const requested = {
+      ...(d.useCache === true ? { useCache: true } : {}),
       projectId: integer(d.projectId, 1, Number.MAX_SAFE_INTEGER, '项目编号'),
       branch: branch(d.branch),
-      sha: text(d.sha, '提交', 40, 64),
     };
-    requireValue(/^[a-f0-9]{40,64}$/.test(data.sha), '提交格式无效。');
+    let data: typeof requested & ({ refType: GitRefType } | { sha: string });
+    if (d.refType !== undefined) {
+      requireValue(d.sha === undefined, '按分支或标签构建时无需指定提交。');
+      data = { ...requested, refType: gitRefType(d.refType) };
+    } else {
+      const sha = text(d.sha, '提交', 40, 64);
+      requireValue(/^[a-f0-9]{40,64}$/.test(sha), '提交格式无效。');
+      data = { ...requested, sha };
+    }
     const j = await service.command<Job>(
       'enqueue',
       { ...data, key, hash: JSON.stringify(data) },

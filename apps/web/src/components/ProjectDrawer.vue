@@ -26,7 +26,6 @@ const emptyForm = (): ProjectInput => ({
   name: '',
   description: '',
   repository: '',
-  defaultBranch: 'main',
   workdir: './',
   buildScript:
     '#!/usr/bin/env bash\n# 在「工作目录」下以 bash -e 执行，任一命令失败即终止构建\nnpm ci\nnpm run build\n',
@@ -46,9 +45,6 @@ const rules: FormRules<ProjectInput> = {
       message: '支持 git@、ssh:// 或 https:// 开头的地址',
       trigger: 'blur',
     },
-  ],
-  defaultBranch: [
-    { required: true, message: '请输入默认分支', trigger: 'blur' },
   ],
   workdir: [
     { required: true, message: '请输入工作目录', trigger: 'blur' },
@@ -117,7 +113,6 @@ watch(open, (visible) => {
           name: p.name,
           description: p.description,
           repository: p.repository,
-          defaultBranch: p.defaultBranch,
           workdir: p.workdir,
           buildScript: p.buildScript,
           artifactPath: p.artifactPath,
@@ -310,36 +305,27 @@ async function submit() {
             >
           </NoticeBar>
         </el-form-item>
-        <div class="grid gap-x-4 sm:grid-cols-2">
-          <el-form-item label="默认分支" prop="defaultBranch">
-            <el-input v-model="form.defaultBranch" class="font-mono" />
-          </el-form-item>
-          <el-form-item prop="workdir">
-            <template #label>
-              <span class="inline-flex items-center gap-1"
-                >工作目录
-                <el-tooltip placement="top" :show-after="100">
-                  <template #content>
-                    <div class="max-w-64 leading-relaxed">
-                      构建脚本在仓库中的哪个目录下执行，相对仓库根目录。<br />
-                      普通项目填 <code>./</code>；Monorepo 子项目填子目录，如
-                      <code>./apps/web</code>。<br />
-                      产物路径也相对这个目录。
-                    </div>
-                  </template>
-                  <el-icon class="cursor-help text-slate-400"
-                    ><QuestionFilled
-                  /></el-icon>
-                </el-tooltip>
-              </span>
-            </template>
-            <el-input
-              v-model="form.workdir"
-              class="font-mono"
-              placeholder="./"
-            />
-          </el-form-item>
-        </div>
+        <el-form-item prop="workdir">
+          <template #label>
+            <span class="inline-flex items-center gap-1"
+              >工作目录
+              <el-tooltip placement="top" :show-after="100">
+                <template #content>
+                  <div class="max-w-64 leading-relaxed">
+                    构建脚本在仓库中的哪个目录下执行，相对仓库根目录。<br />
+                    普通项目填 <code>./</code>；Monorepo 子项目填子目录，如
+                    <code>./apps/web</code>。<br />
+                    产物路径也相对这个目录。
+                  </div>
+                </template>
+                <el-icon class="cursor-help text-slate-400"
+                  ><QuestionFilled
+                /></el-icon>
+              </el-tooltip>
+            </span>
+          </template>
+          <el-input v-model="form.workdir" class="font-mono" placeholder="./" />
+        </el-form-item>
         <NoticeBar>
           <span class="font-medium text-slate-800">工作目录</span>
           是构建脚本在仓库里的执行位置（相对仓库根目录），产物路径也相对它计算。
@@ -404,6 +390,11 @@ async function submit() {
         <div class="grid gap-x-4 sm:grid-cols-2">
           <el-form-item label="产物路径" prop="artifactPath">
             <el-input v-model="form.artifactPath" class="font-mono" />
+            <p class="text-xs text-slate-500">
+              脚本可直接写入
+              <code>$OUTPUT_DIR</code
+              >；未写入时从此路径收集。成功产物统一归档到本项目的 outputs/。
+            </p>
           </el-form-item>
           <el-form-item label="超时时间（分钟）" prop="timeout">
             <el-input-number

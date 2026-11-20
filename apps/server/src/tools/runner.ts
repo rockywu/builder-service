@@ -7,9 +7,10 @@ import {
   stat,
   open,
   readdir,
+  rmdir,
   chmod,
 } from 'node:fs/promises';
-import { join, resolve, relative } from 'node:path';
+import { join, resolve, relative, dirname } from 'node:path';
 import { createHash } from 'node:crypto';
 import {
   runProcess,
@@ -20,14 +21,55 @@ import {
 } from './process.js';
 import { safePath, collectArtifacts, syncDirectory } from './paths.js';
 import {
+  artifactFile,
+  versionOutput,
+  ensureProjectDirectories,
+  ensureDirectory,
+  projectDirectory,
   buildDirectoryExists,
   resolveBuildDirectory,
 } from './build-directory.js';
 import type { AppConfig } from '../config.js';
-import type { Job, Project, LogLine } from '../modules/platform/types.js';
+import type {
+  GitRefType,
+  Job,
+  Project,
+  LogLine,
+} from '../modules/platform/types.js';
 import { requireValue, PlatformError } from '../modules/platform/errors.js';
 import { SshService, sshCommand } from './ssh.js';
 import type { SshCredentials } from './ssh.js';
+
+const remoteRef = (type: GitRefType, name: string) =>
+  `refs/${type === 'tag' ? 'tags' : 'heads'}/${name}`;
+const fetchRevision = (
+  worktree: string,
+  repository: string,
+  revision: string,
+) => [
+  'git',
+  '-C',
+  worktree,
+  '-c',
+  'protocol.file.allow=never',
+  'fetch',
+  '--depth=1',
+  '--no-tags',
+  '--',
+  repository,
+  revision,
+];
+const fetchedCommit = (worktree: string) => [
+  'git',
+  '-C',
+  worktree,
+  'rev-parse',
+  '--verify',
+  'FETCH_HEAD^{commit}',
+];
+const missingRemoteRef = (error: unknown) =>
+  error instanceof ProcessExitError &&
+  /couldn't find remote ref/.test(error.output);
 
 export class BuildRunner {
   readonly root: string;
@@ -89,6 +131,7 @@ export class BuildRunner {
     network?: string,
     timeout = 120_000,
     credentials?: SshCredentials,
+    task?: { history: string; workspace: string },
   ) {
     requireValue(
       !credentials || args[0] === 'git',
@@ -99,7 +142,7 @@ export class BuildRunner {
       return runProcess(args[0]!, args.slice(1), {
         cwd: directory,
         homeDirectory: join(directory, '.home'),
-        markerDirectory: directory,
+        markerDirectory: task?.history ?? directory,
         ...(credentials
           ? { gitSshCommand: sshCommand(credentials.directory) }
           : {}),
@@ -144,16 +187,37 @@ export class BuildRunner {
           '/tmp:rw,nosuid,nodev,size=256m',
           ...(args[0] === 'bash'
             ? [
+                ...(task
+                  ? [
+                      '--mount',
+                      `type=bind,src=${join(task.workspace, 'home')},dst=/build-home`,
+                      '--mount',
+                      `type=bind,src=${join(task.history, 'output-draft')},dst=/output`,
+                      '--env',
+                      'OUTPUT_DIR=/output',
+                      '--mount',
+                      `type=bind,src=${join(task.workspace, 'gitdb', '.git')},dst=/workspace/workspace/gitdb/.git,readonly`,
+                    ]
+                  : []),
                 '--mount',
-                `type=bind,src=${join(directory, 'source')},dst=/workspace/source`,
+                `type=bind,src=${join(task ? dirname(task.workspace) : directory, 'source')},dst=/workspace/source`,
                 '--mount',
-                `type=bind,src=${join(directory, 'build.sh')},dst=/runner/build.sh,readonly`,
+                `type=bind,src=${join(task?.history ?? directory, 'build.sh')},dst=/runner/build.sh,readonly`,
               ]
-            : ['--mount', `type=bind,src=${directory},dst=/workspace`]),
+            : [
+                '--mount',
+                `type=bind,src=${directory},dst=/workspace`,
+                ...(task && directory === task.workspace
+                  ? [
+                      '--mount',
+                      `type=bind,src=${join(dirname(task.workspace), 'source')},dst=/source`,
+                    ]
+                  : []),
+              ]),
           '--workdir',
           '/workspace',
           '--env',
-          'HOME=/tmp',
+          args[0] === 'bash' && task ? 'HOME=/build-home' : 'HOME=/tmp',
           '--env',
           'GIT_CONFIG_NOSYSTEM=1',
           '--env',
@@ -248,6 +312,87 @@ export class BuildRunner {
         new Error('SSH 主机扫描失败或超时，请检查地址、端口和出口策略。'),
         { statusCode: 400 },
       );
+    } finally {
+      if (confirmed) await rm(dir, { recursive: true, force: true });
+    }
+  }
+  async testFetch(project: Project, refType: GitRefType, name: string) {
+    await this.initialize();
+    const id = `fetch-${project.id}-${crypto.randomUUID()}`;
+    const dir = join(this.root, id);
+    await mkdir(dir, { mode: 0o700 });
+    let confirmed = true;
+    const ref = remoteRef(refType, name);
+    const git = (
+      args: string[],
+      credentials?: SshCredentials,
+      network?: string,
+    ) =>
+      this.command(
+        id,
+        dir,
+        args,
+        undefined,
+        undefined,
+        network,
+        120_000,
+        credentials,
+      );
+    try {
+      await git(['git', 'init', 'repo']);
+      return await this.remote(
+        project.repository,
+        project.sshKeyId,
+        async (credentials) => {
+          const refs = await git(
+            [
+              'git',
+              '-c',
+              'protocol.file.allow=never',
+              'ls-remote',
+              '--refs',
+              '--heads',
+              '--tags',
+              '--',
+              project.repository,
+            ],
+            credentials,
+            this.config.gitNetwork,
+          );
+          const branches: string[] = [],
+            tags: string[] = [];
+          for (const line of refs.split('\n')) {
+            const [sha, remote] = line.trim().split('\t');
+            if (!sha || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(sha)) continue;
+            if (remote?.startsWith('refs/heads/'))
+              branches.push(remote.slice(11));
+            if (remote?.startsWith('refs/tags/')) tags.push(remote.slice(10));
+          }
+          requireValue(
+            (refType === 'tag' ? tags : branches).includes(name),
+            refType === 'tag' ? '远端标签不存在。' : '远端分支不存在。',
+            404,
+          );
+          await git(
+            fetchRevision('repo', project.repository, ref),
+            credentials,
+            this.config.gitNetwork,
+          );
+          // An annotated tag must peel to a commit; a tag on a tree/blob cannot build.
+          await git(fetchedCommit('repo'));
+          return { ok: true as const, branches, tags };
+        },
+      );
+    } catch (error) {
+      if (error instanceof ExecutionUnconfirmedError) confirmed = false;
+      if (missingRemoteRef(error))
+        throw new PlatformError(404, '所选分支或标签已不存在，请重新选择。');
+      if (error instanceof ProcessExitError)
+        throw new PlatformError(
+          400,
+          '测试拉取失败，请检查仓库访问权限和所选分支或标签。',
+        );
+      throw error;
     } finally {
       if (confirmed) await rm(dir, { recursive: true, force: true });
     }
@@ -363,7 +508,13 @@ export class BuildRunner {
     job: Job,
     signal: AbortSignal,
     phase: (n: 0 | 1 | 2) => Promise<void>,
+    recordCommit?: (sha: string, message: string) => Promise<void>,
   ) {
+    const project = await ensureProjectDirectories(this.root, job.projectId);
+    const workspace = join(project, 'workspace');
+    const source = join(project, 'source');
+    const gitdb = join(workspace, 'gitdb');
+    const home = join(workspace, 'home');
     const dir = await this.directory(job);
     await mkdir(dir, { mode: 0o700 });
     await syncDirectory(this.root);
@@ -402,16 +553,18 @@ export class BuildRunner {
       args: string[],
       network?: string,
       credentials?: SshCredentials,
+      cwd = workspace,
     ) => {
       const result = await this.command(
         job.id,
-        dir,
+        cwd,
         args,
         signal,
         output,
         network,
         job.snapshot.timeout * 60_000,
         credentials,
+        { history: dir, workspace },
       );
       if (buffered) {
         append(buffered);
@@ -421,45 +574,125 @@ export class BuildRunner {
       return result;
     };
     try {
-      append(`$ git fetch ${job.branch}@${job.sha}`, 'cmd');
+      const ref = job.refType ? remoteRef(job.refType, job.branch) : job.sha;
       await phase(0);
-      await command(['git', 'init', 'source']);
-      // File transport is prohibited for user repositories. Tests may use a local HTTP Git fixture.
-      await this.remote(job.repository!, job.snapshot.sshKeyId, (credentials) =>
-        command(
-          [
-            'git',
-            '-C',
-            'source',
-            '-c',
-            'protocol.file.allow=never',
-            'fetch',
-            '--depth=1',
-            '--no-tags',
-            job.repository!,
-            job.sha,
-          ],
-          this.config.gitNetwork,
-          credentials,
-        ),
-      );
-      await command([
-        'git',
-        '-C',
-        'source',
-        '-c',
-        'advice.detachedHead=false',
-        'checkout',
-        '--detach',
-        job.sha,
+      const identity = JSON.stringify([
+        job.repository,
+        job.snapshot.sshKeyId,
+        job.refType ?? 'sha',
+        ref,
+        this.mode,
+        this.mode === 'docker' ? this.config.buildImage : null,
       ]);
-      const source = join(dir, 'source');
+      const statePath = join(workspace, 'cache.json');
+      let cache: { identity: string; sha: string } | undefined;
+      if (await buildDirectoryExists(workspace)) {
+        try {
+          cache = JSON.parse(
+            await readFile(await safePath(workspace, 'cache.json'), 'utf8'),
+          );
+        } catch (err) {
+          if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+        }
+      }
+      const reusable =
+        cache?.identity === identity &&
+        /^[a-f0-9]{40}([a-f0-9]{24})?$/.test(cache.sha) &&
+        (await buildDirectoryExists(source)) &&
+        (await buildDirectoryExists(gitdb)) &&
+        (await buildDirectoryExists(join(gitdb, '.git')));
+      if (!reusable) {
+        // This directory contains only disposable project workspace data, never job history.
+        await rm(workspace, { force: true, recursive: true });
+        await rm(source, { force: true, recursive: true });
+        await ensureDirectory(workspace);
+        await ensureDirectory(source);
+        await ensureDirectory(gitdb);
+        await command(['git', 'init', '.'], undefined, undefined, gitdb);
+      }
+      const hit = reusable && job.snapshot.useCache === true;
+      const git = (...args: string[]) =>
+        command([
+          'git',
+          '--git-dir=gitdb/.git',
+          '--work-tree=../source',
+          '-c',
+          'core.hooksPath=/dev/null',
+          ...args,
+        ]);
+      // Never let a script-provided .git pointer/config become the repository used with credentials.
+      await rm(join(source, '.git'), { recursive: true, force: true });
+      await writeFile(
+        join(source, '.git'),
+        'gitdir: ../workspace/gitdb/.git\n',
+        { flag: 'wx', mode: 0o600 },
+      );
+      let sha: string;
+      if (hit) {
+        sha = cache!.sha;
+        append(`使用项目缓存：${sha}（不拉取远端）`);
+      } else {
+        await rm(statePath, { force: true });
+        append(
+          `$ git fetch ${job.refType ? ref : job.branch + '@' + job.sha}`,
+          'cmd',
+        );
+        if (reusable) {
+          await git('reset', '--hard', cache!.sha);
+          await git('clean', '-ffdX');
+        }
+        await rm(home, { recursive: true, force: true });
+        try {
+          await this.remote(
+            job.repository!,
+            job.snapshot.sshKeyId,
+            (credentials) =>
+              command(
+                fetchRevision('.', job.repository!, ref),
+                this.config.gitNetwork,
+                credentials,
+                gitdb,
+              ),
+          );
+        } catch (error) {
+          if (job.refType && missingRemoteRef(error))
+            throw new PlatformError(
+              404,
+              '远端分支或标签已不存在，无法开始构建。',
+            );
+          throw error;
+        }
+        sha = (
+          await command(fetchedCommit('.'), undefined, undefined, gitdb)
+        ).trim();
+        requireValue(
+          /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(sha) &&
+            (job.refType || sha === job.sha),
+          '拉取结果与指定提交不一致。',
+        );
+      }
+      await git('checkout', '--force', '--detach', sha);
+      if (!hit) {
+        await git('clean', '-ffdX');
+        await writeFile(statePath, JSON.stringify({ identity, sha }), {
+          mode: 0o600,
+          flag: 'wx',
+        });
+      }
+      await ensureDirectory(home);
+      if (job.refType) {
+        const message = (await git('log', '-1', '--format=%s', sha)).trim();
+        requireValue(recordCommit, '无法记录实际构建提交。', 503);
+        await recordCommit(sha, message);
+      }
       const workdir = await safePath(source, job.snapshot.workdir);
       requireValue((await stat(workdir)).isDirectory(), '工作目录不存在。');
       await writeFile(join(dir, 'build.sh'), job.snapshot.buildScript, {
         mode: 0o600,
         flag: 'wx',
       });
+      const draft = join(dir, 'output-draft');
+      await mkdir(draft, { mode: 0o700 });
       current = 1;
       await phase(1);
       append(`$ cd ${job.snapshot.workdir} && bash -e build.sh`, 'cmd');
@@ -476,7 +709,8 @@ export class BuildRunner {
         await runProcess('bash', ['-ex', join(dir, 'build.sh')], {
           cwd: workdir,
           markerDirectory: dir,
-          homeDirectory: join(dir, '.home'),
+          homeDirectory: home,
+          outputDirectory: draft,
           signal,
           output,
           timeout: job.snapshot.timeout * 60_000,
@@ -491,15 +725,27 @@ export class BuildRunner {
       current = 2;
       await phase(2);
       append('$ collect artifacts', 'cmd');
-      const artifactSource = await safePath(workdir, job.snapshot.artifactPath);
+      const outputDraft = await safePath(dir, 'output-draft');
+      const direct = (await readdir(outputDraft)).length > 0;
+      const artifactSource = direct
+        ? outputDraft
+        : await safePath(workdir, job.snapshot.artifactPath);
       const staging = join(dir, 'staging');
-      const files = await collectArtifacts(dir, artifactSource, staging);
+      const files = await collectArtifacts(dir, artifactSource, staging, true);
       requireValue(!signal.aborted, '任务已请求停止。');
-      await rename(staging, join(dir, 'artifacts'));
-      await syncDirectory(dir);
+      const parent = await safePath(project, 'outputs');
+      const dest = versionOutput(this.root, job);
+      requireValue(
+        !(await buildDirectoryExists(dest)),
+        '该任务的输出目录已存在。',
+        409,
+      );
+      await rename(staging, dest);
+      await syncDirectory(parent);
+      await rm(draft, { recursive: true, force: true });
       const final = files.map((f) => ({
         ...f,
-        storageKey: f.storageKey.replace(/^staging\//, 'artifacts/'),
+        storageKey: 'outputs/' + f.name,
       }));
       // Manifest is the durable boundary between file publication and the database commit.
       const manifest = await open(join(dir, 'manifest.tmp'), 'wx', 0o600);
@@ -604,7 +850,7 @@ export class BuildRunner {
         await readFile(join(directory, 'manifest.json'), 'utf8'),
       ) as { name: string; size: number; sha256: string; storageKey: string }[];
       for (const f of files) {
-        const path = await safePath(directory, f.storageKey);
+        const path = await artifactFile(this.root, job, f.storageKey);
         const hash = createHash('sha256');
         const file = await open(path, 'r');
         let size = 0;
@@ -629,11 +875,42 @@ export class BuildRunner {
       throw e;
     }
   }
-  async remove(job: Job) {
-    await rm(await this.directory(job), { recursive: true, force: true });
+  async removeWorkspace(id: number) {
+    if (!(await buildDirectoryExists(this.root))) return;
+    const project = projectDirectory(this.root, id);
+    if (!(await buildDirectoryExists(project))) return;
+    await rm(join(project, 'source'), { recursive: true, force: true });
+    await rm(join(project, 'workspace'), { recursive: true, force: true });
+    // Refuse to remove unexpected history; only the verified jobs have been deleted.
+    try {
+      await rmdir(join(project, 'jobs'));
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e;
+    }
+    try {
+      await rmdir(join(project, 'outputs'));
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e;
+    }
+    await rmdir(project);
     await syncDirectory(this.root);
   }
+  async remove(job: Job) {
+    const dir = await this.directory(job);
+    const project = projectDirectory(this.root, job.projectId);
+    if (
+      (await buildDirectoryExists(this.root)) &&
+      (await buildDirectoryExists(project)) &&
+      (await buildDirectoryExists(join(project, 'outputs')))
+    ) {
+      await rm(versionOutput(this.root, job), { recursive: true, force: true });
+      await syncDirectory(join(project, 'outputs'));
+    }
+    await rm(dir, { recursive: true, force: true });
+    const parent = dirname(dir);
+    if (await buildDirectoryExists(parent)) await syncDirectory(parent);
+  }
   async artifact(job: Job, key: string) {
-    return safePath(await this.directory(job), key);
+    return artifactFile(this.root, job, key);
   }
 }

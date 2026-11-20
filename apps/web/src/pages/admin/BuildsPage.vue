@@ -236,12 +236,17 @@ function openJob(job: Job) {
           </div>
         </template>
       </el-table-column>
-      <el-table-column label="分支 / 提交" min-width="170">
+      <el-table-column label="分支或标签 / 提交" min-width="170">
         <template #default="{ row }">
-          <span class="font-mono text-xs text-slate-600"
-            >{{ row.branch }}<span class="text-slate-400">@</span
-            >{{ shortSha(row.sha) }}</span
-          >
+          <span class="font-mono text-xs text-slate-600">
+            <span v-if="row.refType === 'tag'" class="text-slate-500"
+              >标签：</span
+            >{{ row.branch
+            }}<template v-if="row.sha"
+              ><span class="text-slate-400">@</span
+              >{{ shortSha(row.sha) }}</template
+            >
+          </span>
         </template>
       </el-table-column>
       <el-table-column label="状态" min-width="170">

@@ -2,19 +2,17 @@
 import { computed, ref, watch } from 'vue';
 import { ElMessage } from 'element-plus';
 import { Refresh } from '@element-plus/icons-vue';
-import type { Job, Project } from '../api/types';
+import type { GitRefType, Job, Project } from '../api/types';
 import {
   OCCUPYING,
   db,
   enqueueBuild,
-  fetchCode,
+  testFetch,
   loadKnownHosts,
-  now,
   scriptCommands,
   sshHostOf,
 } from '../api/store';
 import { currentUser, isAdmin } from '../auth';
-import { relativeTime, shortSha } from '../utils/format';
 import NoticeBar from './NoticeBar.vue';
 import ProjectAvatar from './ProjectAvatar.vue';
 
@@ -26,12 +24,48 @@ const emit = defineEmits<{
 }>();
 
 const branch = ref('');
+const refType = ref<GitRefType>('branch');
 const fetching = ref(false);
 const pending = ref(false);
+const useCache = ref(false);
+const tested = ref<{ selection: string; error?: string } | null>(null);
+const refs = ref<{
+  project: string;
+  branches: string[];
+  tags: string[];
+} | null>(null);
+const repositoryKey = computed(() =>
+  props.project
+    ? JSON.stringify([
+        props.project.id,
+        props.project.repository,
+        props.project.sshKeyId,
+      ])
+    : '',
+);
+const selection = computed(() =>
+  JSON.stringify([repositoryKey.value, refType.value, branch.value]),
+);
+const result = computed(() =>
+  tested.value?.selection === selection.value ? tested.value : null,
+);
+const refOptions = computed(() => {
+  const available =
+    refs.value?.project === repositoryKey.value ? refs.value : null;
+  return refType.value === 'tag'
+    ? (available?.tags ?? [])
+    : (available?.branches ?? props.project?.branches ?? []);
+});
+
+const branchPreferenceKey = computed(() =>
+  props.project && currentUser.value
+    ? `builder:build-branch:${currentUser.value.id}:${props.project.slug}`
+    : '',
+);
 
 const hostsLoaded = ref(false);
 watch(open, (visible) => {
-  if (visible && props.project) branch.value = props.project.defaultBranch;
+  if (!visible || !props.project) return;
   /* 受信任主机仅管理员可读；加载失败时不提示主机问题，不影响拉取 */
   if (visible && isAdmin.value) {
     hostsLoaded.value = false;
@@ -39,7 +73,38 @@ watch(open, (visible) => {
       .then(() => (hostsLoaded.value = true))
       .catch(() => {});
   }
+  tested.value = null;
+  useCache.value = false;
+  let previous: string | null = null;
+  try {
+    if (branchPreferenceKey.value)
+      previous = localStorage.getItem(branchPreferenceKey.value);
+  } catch {
+    // A browser may disable storage; the last fetched branch is still available.
+  }
+  refType.value = previous?.startsWith('refs/tags/') ? 'tag' : 'branch';
+  branch.value =
+    previous?.replace(/^refs\/(?:heads|tags)\//, '') ||
+    (refType.value === 'branch' ? props.project.fetched.branch : '');
 });
+
+function rememberRef(value: string) {
+  if (!value || !branchPreferenceKey.value) return;
+  try {
+    localStorage.setItem(
+      branchPreferenceKey.value,
+      `refs/${refType.value === 'tag' ? 'tags' : 'heads'}/${value}`,
+    );
+  } catch {
+    // Storage is optional and must not interrupt the build flow.
+  }
+}
+function changeRefType() {
+  tested.value = null;
+  branch.value =
+    refType.value === 'branch' ? (props.project?.fetched.branch ?? '') : '';
+  rememberRef(branch.value);
+}
 
 /** 拉取前的凭据检查：只提示，不阻止拉取 */
 const credentialIssue = computed(() => {
@@ -63,46 +128,68 @@ function configure() {
   emit('configure', props.project);
 }
 
-/** 只有当前分支已拉取过的提交才能入队，保证 commit 固定 */
-const fetched = computed(() =>
-  props.project && props.project.fetched.branch === branch.value
-    ? props.project.fetched
-    : null,
-);
 const occupied = computed(
   () => db.jobs.filter((job) => OCCUPYING.includes(job.status)).length,
 );
 const queued = computed(
   () => db.jobs.filter((job) => job.status === 'queued').length,
 );
-const willWait = computed(() => occupied.value >= db.settings.maxConcurrent);
+const projectBusy = computed(() =>
+  db.jobs.some(
+    (j) =>
+      j.projectId === props.project?.id &&
+      (OCCUPYING.includes(j.status) || j.status === 'queued'),
+  ),
+);
+const willWait = computed(
+  () => projectBusy.value || occupied.value >= db.settings.maxConcurrent,
+);
 
 async function refresh() {
-  if (!props.project) return;
+  if (!props.project || !branch.value || fetching.value) return;
+  const requested = selection.value;
+  const project = repositoryKey.value;
+  tested.value = null;
   fetching.value = true;
   try {
-    await fetchCode(props.project.id, branch.value);
-    ElMessage.success('已获取最新代码');
+    const available = await testFetch(
+      props.project.id,
+      branch.value,
+      refType.value,
+    );
+    if (open.value && repositoryKey.value === project)
+      refs.value = { project, ...available };
+    if (open.value && selection.value === requested) {
+      tested.value = { selection: requested };
+      ElMessage.success('测试拉取成功');
+    }
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : '拉取失败');
+    if (open.value && selection.value === requested) {
+      const message = error instanceof Error ? error.message : '测试拉取失败';
+      tested.value = { selection: requested, error: message };
+      ElMessage.error(message);
+    }
   } finally {
     fetching.value = false;
   }
 }
 
 async function submit() {
-  if (!props.project || !fetched.value || pending.value) return;
+  if (!props.project || !branch.value || pending.value) return;
   pending.value = true;
   try {
     const job = await enqueueBuild(
       props.project.id,
       branch.value,
-      fetched.value.sha,
-      fetched.value.message,
-      currentUser.value?.username ?? 'unknown',
+      refType.value,
+      useCache.value,
     );
     open.value = false;
     emit('created', job);
+  } catch (error) {
+    ElMessage.error(
+      error instanceof Error ? error.message : '加入构建队列失败',
+    );
   } finally {
     pending.value = false;
   }
@@ -156,49 +243,58 @@ async function submit() {
 
       <div>
         <label class="mb-1.5 block text-sm text-slate-700" for="build-branch"
-          >构建分支</label
+          >构建分支或标签</label
         >
         <div class="flex gap-2">
+          <el-select
+            v-model="refType"
+            aria-label="引用类型"
+            class="!w-24 shrink-0"
+            @change="changeRefType"
+          >
+            <el-option label="分支" value="branch" />
+            <el-option label="标签" value="tag" />
+          </el-select>
           <el-select
             id="build-branch"
             v-model="branch"
             filterable
             allow-create
             default-first-option
-            class="flex-1"
+            class="min-w-0 flex-1"
+            :placeholder="
+              refType === 'tag' ? '选择或输入标签' : '选择或输入分支'
+            "
+            @change="rememberRef"
           >
             <el-option
-              v-for="item in project.branches"
+              v-for="item in refOptions"
               :key="item"
               :label="item"
               :value="item"
             />
           </el-select>
-          <el-button :icon="Refresh" :loading="fetching" @click="refresh"
-            >拉取代码</el-button
+          <el-button
+            :icon="Refresh"
+            :loading="fetching"
+            :disabled="!branch"
+            @click="refresh"
+            >测试拉取</el-button
           >
         </div>
       </div>
 
-      <div
-        v-if="fetched"
-        class="rounded-lg border border-slate-200 p-3 text-sm"
-      >
-        <div class="flex items-center justify-between text-xs text-slate-500">
-          <span>将构建的提交</span>
-          <span>拉取于 {{ relativeTime(fetched.at, now) }}</span>
-        </div>
-        <div class="mt-1.5 flex items-center gap-2">
-          <code
-            class="rounded bg-brand-50 px-1.5 py-0.5 font-mono text-xs text-brand-700"
-            >{{ shortSha(fetched.sha) }}</code
-          >
-          <span class="truncate text-slate-700">{{ fetched.message }}</span>
-        </div>
-      </div>
-      <NoticeBar v-else tone="warning"
-        >该分支尚未拉取，请先点击「拉取代码」以固定要构建的提交</NoticeBar
-      >
+      <NoticeBar v-if="result" :tone="result.error ? 'warning' : 'success'">
+        {{ result.error || '测试拉取成功。' }}
+      </NoticeBar>
+      <el-checkbox v-model="useCache">使用构建缓存</el-checkbox>
+      <p class="text-sm text-slate-500">
+        {{
+          useCache
+            ? '命中时直接使用已缓存的提交和依赖，不获取远端更新。首次构建或切换引用时重新拉取。'
+            : '拉取指定版本，清理 .gitignore 忽略的文件和依赖后执行。'
+        }}
+      </p>
 
       <dl class="grid grid-cols-2 gap-3 text-xs sm:grid-cols-4">
         <div>
@@ -229,7 +325,10 @@ async function submit() {
       </dl>
 
       <NoticeBar :tone="willWait ? 'warning' : 'success'">
-        <template v-if="willWait"
+        <template v-if="projectBusy"
+          >同一项目一次只执行一个构建，此任务将排队。</template
+        >
+        <template v-else-if="willWait"
           >执行槽位已满（{{ occupied }}/{{
             db.settings.maxConcurrent
           }}），将排在 {{ queued }} 个任务之后</template
@@ -245,7 +344,7 @@ async function submit() {
       <el-button @click="open = false">取消</el-button>
       <el-button
         type="primary"
-        :disabled="!fetched"
+        :disabled="!branch"
         :loading="pending"
         @click="submit"
         >加入构建队列</el-button

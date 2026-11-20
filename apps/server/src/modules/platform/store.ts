@@ -3,6 +3,7 @@ import type Database from 'better-sqlite3';
 import type {
   User,
   Project,
+  ProjectInput,
   Job,
   Release,
   Artifact,
@@ -523,9 +524,10 @@ export function createPlatformStore(db: Database.Database) {
         return settings();
       case 'saveProject': {
         admin();
+        const { defaultBranch, ...fields } = d.input as ProjectInput;
         const input = {
-          ...(d.input as Project),
-          sshKeyId: (d.input as Project).sshKeyId ?? null,
+          ...fields,
+          sshKeyId: fields.sshKeyId ?? null,
         };
         if (/^(git@|ssh:\/\/)/.test(input.repository))
           requireValue(input.sshKeyId !== null, 'SSH 地址需要选择密钥');
@@ -536,7 +538,7 @@ export function createPlatformStore(db: Database.Database) {
               .get(input.sshKeyId),
             '所选 SSH 密钥不存在。',
           );
-        input.sshKeyName =
+        const sshKeyName =
           input.sshKeyId === null
             ? null
             : sshKeys().find((k) => k.id === input.sshKeyId)!.name;
@@ -552,9 +554,13 @@ export function createPlatformStore(db: Database.Database) {
           const next = {
             ...p,
             ...input,
+            sshKeyName,
+            defaultBranch: defaultBranch ?? p.defaultBranch,
             id: p.id,
             slug: p.slug,
-            branches: [...new Set([...p.branches, input.defaultBranch])],
+            branches: defaultBranch
+              ? [...new Set([...p.branches, defaultBranch])]
+              : p.branches,
             fetched:
               p.repository === input.repository && p.sshKeyId === input.sshKeyId
                 ? p.fetched
@@ -576,8 +582,10 @@ export function createPlatformStore(db: Database.Database) {
             .replace(/[^a-z0-9-]/g, '-') || 'project';
         const p = {
           ...input,
+          sshKeyName,
+          defaultBranch: defaultBranch ?? '',
           slug: slugBase,
-          branches: [input.defaultBranch],
+          branches: defaultBranch ? [defaultBranch] : [],
           fetched: { branch: '', sha: '', message: '', at: 0 },
           color: '#2563eb',
         };
@@ -647,13 +655,20 @@ export function createPlatformStore(db: Database.Database) {
         );
         const p = project(Number(d.projectId));
         requireValue(!p.deleting, '项目正在删除，不能发起构建。', 409);
-        requireValue(
-          p.fetched.sha === d.sha &&
-            p.fetched.branch === d.branch &&
-            p.fetched.at > 0,
-          '请先拉取所选分支的最新提交。',
-          409,
-        );
+        const refType = d.refType as Job['refType'];
+        if (refType === undefined)
+          requireValue(
+            p.fetched.sha === d.sha &&
+              p.fetched.branch === d.branch &&
+              p.fetched.at > 0,
+            '请先拉取所选分支的最新提交。',
+            409,
+          );
+        else
+          requireValue(
+            (refType === 'branch' || refType === 'tag') && d.sha === undefined,
+            '构建引用无效。',
+          );
         const number =
           ((
             db
@@ -678,8 +693,9 @@ export function createPlatformStore(db: Database.Database) {
           number: n,
           projectId: p.id,
           branch: String(d.branch),
-          sha: String(d.sha),
-          message: p.fetched.message,
+          ...(refType ? { refType } : {}),
+          sha: refType ? '' : String(d.sha),
+          message: refType ? '' : p.fetched.message,
           status: 'queued',
           triggeredBy: actor.username,
           triggeredById: actor.id,
@@ -687,6 +703,7 @@ export function createPlatformStore(db: Database.Database) {
           startedAt: null,
           finishedAt: null,
           snapshot: {
+            useCache: d.useCache === true,
             workdir: p.workdir,
             buildScript: p.buildScript,
             artifactPath: p.artifactPath,
@@ -718,19 +735,23 @@ export function createPlatformStore(db: Database.Database) {
         return { ...j, id, seq: id };
       }
       case 'claim': {
-        const occupied = (
-          db
-            .prepare(
-              "SELECT COUNT(*) AS n FROM build_jobs WHERE status IN ('running','canceling')",
-            )
-            .get() as { n: number }
-        ).n;
-        if (occupied >= settings().maxConcurrent) return null;
+        const occupied = db
+          .prepare(
+            "SELECT project_id FROM build_jobs WHERE status IN ('running','canceling')",
+          )
+          .all() as { project_id: number }[];
+        if (occupied.length >= settings().maxConcurrent) return null;
+        const ids = occupied.map((row) => row.project_id);
+        const exclude = ids.length
+          ? ` AND project_id NOT IN (${ids.map(() => '?').join(',')})`
+          : '';
         const r = db
           .prepare(
-            "SELECT * FROM build_jobs WHERE status='queued' AND deleting=0 ORDER BY id LIMIT 1",
+            "SELECT * FROM build_jobs WHERE status='queued' AND deleting=0" +
+              exclude +
+              ' ORDER BY id LIMIT 1',
           )
-          .get() as JobRow | undefined;
+          .get(...ids) as JobRow | undefined;
         if (!r) return null;
         const j = job(r);
         j.status = 'running';
@@ -744,6 +765,23 @@ export function createPlatformStore(db: Database.Database) {
         const j = job(r);
         j.phase = d.phase as Job['phase'];
         j.progress = Number(d.progress);
+        saveJob(j);
+        return true;
+      }
+      case 'jobCommit': {
+        requireValue(!c.actor, '无权记录构建提交。', 403);
+        const r = jobRow(Number(d.id));
+        if (r.status !== 'running' || r.deleting) return false;
+        const j = job(r);
+        requireValue(j.refType && !j.sha, '构建提交已固定。', 409);
+        requireValue(
+          typeof d.sha === 'string' &&
+            /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(d.sha) &&
+            typeof d.message === 'string',
+          '提交格式无效。',
+        );
+        j.sha = d.sha;
+        j.message = d.message;
         saveJob(j);
         return true;
       }
@@ -770,6 +808,7 @@ export function createPlatformStore(db: Database.Database) {
         j.error = d.error as string | undefined;
         if (j.status === 'succeeded') j.progress = 100;
         if (j.status === 'succeeded') {
+          requireValue(!j.refType || j.sha, '缺少实际构建提交。', 409);
           const p = project(j.projectId);
           const rel: Release = {
             id: 0,
@@ -777,6 +816,7 @@ export function createPlatformStore(db: Database.Database) {
             projectId: j.projectId,
             version: `${p.slug}-b${j.number}`,
             branch: j.branch,
+            ...(j.refType ? { refType: j.refType } : {}),
             sha: j.sha,
             createdAt: j.finishedAt,
             triggeredBy: j.triggeredBy,

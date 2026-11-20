@@ -121,7 +121,7 @@ onBeforeUnmount(() => {
     :target="`「${plan.name}」有 ${plan.candidates.length} 项旧构建可清理`"
     :description="`最多保留最近 ${plan.limit} 个有效版本，本次保留：${plan.kept.map((n) => '#' + n).join('、')}。有效指构建成功、产物可用且未被标记为测试不通过。`"
     :scope="plan.candidates.map((c) => '#' + c.number + '：' + c.reason)"
-    note="确认后将删除所列构建的记录、源码、缓存、日志和产物，相关下载链接立即失效。取消后稍后再提醒。"
+    note="确认后将删除所列构建的记录、任务专属文件、日志和产物（保留项目共享缓存），相关下载链接立即失效。取消后稍后再提醒。"
     confirm-text="确认清理"
     tone="danger"
     :on-result="decide"

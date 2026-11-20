@@ -21,7 +21,10 @@ import { createApp } from '../dist/app.js';
 import { startDatabase, closeDatabase } from '../dist/db/client.js';
 import { SshService, isPublicAddress, sshHostOf } from '../dist/tools/ssh.js';
 import { BuildRunner } from '../dist/tools/runner.js';
-import { buildDirectoryName } from '../dist/tools/build-directory.js';
+import {
+  buildDirectoryName,
+  versionOutput,
+} from '../dist/tools/build-directory.js';
 import { runProcess } from '../dist/tools/process.js';
 const exec = promisify(execFile),
   origin = 'http://127.0.0.1:5173';
@@ -707,7 +710,10 @@ test(
       await readFile(join(jobDir, 'manifest.json'), 'utf8'),
     );
     const artifactPath = (name) =>
-      join(jobDir, manifest.find((f) => f.name === name).storageKey);
+      join(
+        versionOutput(join(f.config.dataDirectory, 'builds'), job),
+        manifest.find((f) => f.name === name).name,
+      );
     assert.equal(
       await readFile(artifactPath('result.txt'), 'utf8'),
       'ssh-value',
@@ -830,7 +836,10 @@ test(
       );
       assert.equal(
         await readFile(
-          join(dir, manifest.find((a) => a.name === 'result.txt').storageKey),
+          join(
+            versionOutput(join(f.config.dataDirectory, 'builds'), parallel[i]),
+            manifest.find((a) => a.name === 'result.txt').name,
+          ),
           'utf8',
         ),
         i === 0 ? 'ssh-value' : 'second-key-value',

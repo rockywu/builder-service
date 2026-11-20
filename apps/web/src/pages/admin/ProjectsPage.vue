@@ -247,9 +247,9 @@ function onCommand(command: string, project: Project) {
       </dl>
 
       <div class="mt-auto flex items-center justify-between gap-2 p-5 pt-4">
-        <span class="min-w-0 truncate font-mono text-xs text-slate-500"
-          >⑂ {{ project.defaultBranch }} · {{ project.workdir }}</span
-        >
+        <span class="min-w-0 truncate font-mono text-xs text-slate-500">{{
+          project.workdir
+        }}</span>
         <span class="flex shrink-0 items-center gap-3">
           <span
             v-if="active"

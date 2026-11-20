@@ -9,7 +9,7 @@ import {
   cp,
   rename,
 } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 import { createHash } from 'node:crypto';
 import { constants } from 'node:fs';
 import type { DatabaseClient } from '../../db/client.js';
@@ -208,6 +208,14 @@ export class PlatformService {
           });
           requireValue(ok, '任务已停止。', 409);
         },
+        async (sha, message) => {
+          const ok = await this.command<boolean>('jobCommit', {
+            id: j.id,
+            sha,
+            message,
+          });
+          requireValue(ok, '任务已停止。', 409);
+        },
       );
       try {
         await this.command('finish', {
@@ -318,6 +326,7 @@ export class PlatformService {
           { id },
         ))
           await this.delete(jobId);
+        await this.runner.removeWorkspace(id);
         await this.removeUnusedIcon(project.icon, true);
         await this.command('completeProjectDelete', { id });
       } catch (error) {
@@ -410,6 +419,10 @@ export class PlatformService {
         filename: join(staging, 'platform.db'),
       });
       await cp(this.runner.root, join(staging, 'builds'), {
+        filter: (path) =>
+          !/^project-[1-9]\d*\/(workspace|source)$/.test(
+            relative(this.runner.root, path),
+          ),
         recursive: true,
         dereference: false,
       });

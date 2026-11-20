@@ -65,6 +65,7 @@ export function runProcess(
     maxBytes?: number;
     markerDirectory?: string;
     homeDirectory?: string;
+    outputDirectory?: string;
     gitSshCommand?: string;
     output?: (text: string, error: boolean) => void;
   } = {},
@@ -90,6 +91,9 @@ export function runProcess(
         cwd: options.cwd,
         env: {
           ...cleanEnvironment(),
+          ...(options.outputDirectory
+            ? { OUTPUT_DIR: options.outputDirectory }
+            : {}),
           ...(options.homeDirectory ? { HOME: options.homeDirectory } : {}),
           ...(options.gitSshCommand
             ? { GIT_SSH_COMMAND: options.gitSshCommand }

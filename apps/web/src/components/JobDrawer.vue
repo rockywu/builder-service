@@ -119,7 +119,10 @@ function viewRelease() {
                 >队列第 {{ queuePosition }} 位</span
               >
             </div>
-            <p class="mt-0.5 truncate text-sm text-slate-500">
+            <p
+              v-if="job.message"
+              class="mt-0.5 truncate text-sm text-slate-500"
+            >
               {{ job.message }}
             </p>
           </div>
@@ -131,9 +134,12 @@ function viewRelease() {
           class="mt-4 grid grid-cols-2 gap-x-6 gap-y-2 text-sm sm:grid-cols-4"
         >
           <div>
-            <dt class="text-xs text-slate-500">分支 / 提交</dt>
+            <dt class="text-xs text-slate-500">
+              {{ job.refType === 'tag' ? '标签' : '分支' }} / 提交
+            </dt>
             <dd class="mt-0.5 truncate font-mono text-slate-800">
-              {{ job.branch }}@{{ shortSha(job.sha) }}
+              {{ job.branch
+              }}<template v-if="job.sha">@{{ shortSha(job.sha) }}</template>
             </dd>
           </div>
           <div>

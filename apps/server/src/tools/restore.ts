@@ -3,8 +3,7 @@ import { cp, mkdir, open } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
 import { createHash } from 'node:crypto';
 import Database from 'better-sqlite3';
-import { safePath } from './paths.js';
-import { resolveBuildDirectory } from './build-directory.js';
+import { artifactFile } from './build-directory.js';
 import type { Job } from '../modules/platform/types.js';
 import { requireValue } from '../modules/platform/errors.js';
 const [sourceArg, targetArg] = process.argv.slice(2);
@@ -48,23 +47,23 @@ try {
   const jobs = database.prepare(
     'SELECT project_id, payload FROM build_jobs WHERE id=?',
   );
-  const directories = new Map<number, string>();
+  const locations = new Map<number, Job>();
   for (const a of artifacts) {
     const jobId = ids.get(a.release_id);
     if (jobId === undefined) continue;
-    let directory = directories.get(jobId);
-    if (directory === undefined) {
+    let job = locations.get(jobId);
+    if (!job) {
       const row = jobs.get(jobId) as
         { project_id: number; payload: string } | undefined;
       requireValue(row, '备份产物对应的构建任务不存在。');
-      directory = await resolveBuildDirectory(join(source, 'builds'), {
+      job = {
         ...(JSON.parse(row.payload) as Job),
         id: jobId,
         projectId: row.project_id,
-      });
-      directories.set(jobId, directory);
+      };
+      locations.set(jobId, job);
     }
-    const path = await safePath(directory, a.storage_key);
+    const path = await artifactFile(join(source, 'builds'), job, a.storage_key);
     const file = await open(path, 'r');
     const hash = createHash('sha256');
     let size = 0;

@@ -73,7 +73,6 @@ export type ProjectInput = Pick<
   | 'name'
   | 'description'
   | 'repository'
-  | 'defaultBranch'
   | 'workdir'
   | 'buildScript'
   | 'artifactPath'
@@ -83,6 +82,7 @@ export type ProjectInput = Pick<
 
 export type JobStatus =
   'queued' | 'running' | 'canceling' | 'succeeded' | 'failed' | 'canceled';
+export type GitRefType = 'branch' | 'tag';
 
 export interface LogLine {
   step: number;
@@ -98,6 +98,7 @@ export interface Job {
   number: number;
   projectId: number;
   branch: string;
+  refType?: GitRefType;
   sha: string;
   message: string;
   status: JobStatus;
@@ -109,7 +110,7 @@ export interface Job {
   snapshot: Pick<
     Project,
     'workdir' | 'buildScript' | 'artifactPath' | 'timeout' | 'sshKeyId'
-  >;
+  > & { useCache?: boolean };
   steps: string[];
   script: LogLine[];
   visibleLines: number;
@@ -134,6 +135,7 @@ export interface Release {
   projectId: number;
   version: string;
   branch: string;
+  refType?: GitRefType;
   sha: string;
   createdAt: number;
   triggeredBy: string;

@@ -40,12 +40,11 @@ export type ProjectInput = Pick<
   | 'description'
   | 'repository'
   | 'sshKeyId'
-  | 'defaultBranch'
   | 'workdir'
   | 'buildScript'
   | 'artifactPath'
   | 'timeout'
-> & { icon?: string | undefined };
+> & { icon?: string | undefined; defaultBranch?: string };
 
 export type JobStatus =
   'queued' | 'running' | 'canceling' | 'succeeded' | 'failed' | 'canceled';
@@ -80,7 +79,7 @@ export interface Job {
   snapshot: Pick<
     Project,
     'workdir' | 'buildScript' | 'artifactPath' | 'timeout' | 'sshKeyId'
-  >;
+  > & { useCache?: boolean };
   steps: string[];
   script: LogLine[];
   visibleLines: number;
@@ -132,6 +131,7 @@ export interface Release {
   projectId: number;
   version: string;
   branch: string;
+  refType?: GitRefType;
   sha: string;
   createdAt: number;
   triggeredBy: string;

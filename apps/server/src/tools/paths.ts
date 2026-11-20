@@ -1,5 +1,5 @@
 import { lstat, realpath, readdir, open, mkdir } from 'node:fs/promises';
-import { resolve, relative, isAbsolute, join } from 'node:path';
+import { resolve, relative, isAbsolute, join, dirname } from 'node:path';
 import { constants } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { requireValue } from '../modules/platform/errors.js';
@@ -41,6 +41,7 @@ export async function collectArtifacts(
   root: string,
   source: string,
   destination: string,
+  preserveNames = false,
 ) {
   const result: {
     name: string;
@@ -70,11 +71,15 @@ export async function collectArtifacts(
       path,
       constants.O_RDONLY | constants.O_NOFOLLOW,
     );
-    const targetFile = await open(
-      join(destination, String(result.length)),
-      'wx',
-      0o600,
+    const target = join(
+      destination,
+      preserveNames ? name : String(result.length),
     );
+    if (preserveNames) {
+      relativePath(name);
+      await mkdir(dirname(target), { recursive: true, mode: 0o700 });
+    }
+    const targetFile = await open(target, 'wx', 0o600);
     const hash = createHash('sha256');
     let size = 0;
     try {
@@ -96,7 +101,7 @@ export async function collectArtifacts(
       name,
       size,
       sha256: hash.digest('hex'),
-      storageKey: relative(root, join(destination, String(result.length))),
+      storageKey: relative(root, target),
     });
   }
   const stat = await lstat(source);
