@@ -283,22 +283,15 @@ export async function updateSshKey(
 export async function deleteSshKey(id: number) {
   return keyMutation<void>(`/ssh-keys/${id}`, 'DELETE');
 }
-/** 从 git@host:path 或 ssh://[user@]host[:port]/path 解析主机与端口；HTTPS 返回 null。 */
-export function sshHostOf(repository: string) {
+export function isSshRepository(repository: string): boolean {
   const scp = /^git@([^:\s/]+):/.exec(repository);
   const address = scp ? `ssh://${scp[1]}/` : repository;
-  if (!address.startsWith('ssh://')) return null;
+  if (!address.startsWith('ssh://')) return false;
   try {
-    const url = new URL(address);
-    return {
-      host: url.hostname
-        .replace(/^\[|\]$/g, '')
-        .toLowerCase()
-        .replace(/\.$/, ''),
-      port: Number(url.port || 22),
-    };
+    new URL(address);
+    return true;
   } catch {
-    return null;
+    return false;
   }
 }
 

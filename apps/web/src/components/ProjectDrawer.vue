@@ -9,7 +9,7 @@ import {
   loadSshKeys,
   saveProject,
   scriptCommands,
-  sshHostOf,
+  isSshRepository,
 } from '../api/store';
 import NoticeBar from './NoticeBar.vue';
 import ProjectAvatar from './ProjectAvatar.vue';
@@ -34,6 +34,8 @@ const emptyForm = (): ProjectInput => ({
 });
 const form = reactive<ProjectInput>(emptyForm());
 const editing = computed(() => Boolean(props.project));
+
+const usesSsh = computed(() => isSshRepository(form.repository));
 
 const rules: FormRules<ProjectInput> = {
   name: [{ required: true, message: '请输入项目名称', trigger: 'blur' }],
@@ -68,7 +70,7 @@ const rules: FormRules<ProjectInput> = {
   sshKeyId: [
     {
       validator: (_rule, value: number | null, callback) =>
-        value == null && sshHostOf(form.repository)
+        value == null && usesSsh.value
           ? callback(new Error('SSH 地址需要选择拉取密钥'))
           : callback(),
       trigger: 'change',
@@ -82,7 +84,6 @@ async function loadCredentials() {
   keysError.value = false;
   await loadSshKeys().catch(() => (keysError.value = true));
 }
-const repositoryHost = computed(() => sshHostOf(form.repository));
 
 watch(open, (visible) => {
   if (!visible) return;
@@ -143,7 +144,7 @@ async function submit() {
         ...form,
         buildScript: form.buildScript.replace(/\r\n/g, '\n'),
         // HTTPS 仓库匿名拉取，不保留密钥引用
-        sshKeyId: repositoryHost.value ? form.sshKeyId : null,
+        sshKeyId: usesSsh.value ? form.sshKeyId : null,
       },
       props.project?.id,
     );
@@ -238,7 +239,7 @@ async function submit() {
             placeholder="git@git.example.com:group/repo.git"
           />
         </el-form-item>
-        <el-form-item v-if="repositoryHost" label="SSH 密钥" prop="sshKeyId">
+        <el-form-item v-if="usesSsh" label="SSH 密钥" prop="sshKeyId">
           <el-select
             v-model="form.sshKeyId"
             class="w-full"

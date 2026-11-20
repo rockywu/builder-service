@@ -7,7 +7,7 @@
 - `deploy/.env` 供 Compose 读取：`BUILDER_REVISION` 为 API 和 Web 镜像的共同版本标签；`BUILDER_UID`、`BUILDER_GID` 是服务账号；`DOCKER_SOCKET_GID` 取自 `stat -c %g /var/run/docker.sock`。`BUILDER_DATA_DIR` 是绝对路径，在宿主和 API 容器内必须一致。`BUILDER_ENV_FILE` 指向实际 API 配置文件。
 - 该服务器将实际 API 配置保存在 `/home/dev/.config/builder-service/server.env`（权限 `0600`）。参考 `apps/server/.env.template`，设置 `HOST=0.0.0.0`、`PORT=3000`、`DATA_DIR`、HTTPS `APP_ORIGIN`、Docker runner、Git 专用网络与 DNS；`BUILDER_BUILD_NETWORK=none`。首次生成 `BUILDER_SECRET_KEY` 后持续保留，主密钥与数据库备份分开保存。
 - 仅受信任的 API 调度器挂载 Docker socket。任务容器不挂载 socket；执行脚本的容器禁网、无 Git 私钥。API 使用宿主 PID 命名空间，以便重启时识别 SQLite 数据目录中的持久调度锁。
-- 该主机目前设置 `BUILDER_GIT_NETWORK=none`，不加载 Builder 专用防火墙规则。现有页面和下载可用；远端 Git 拉取和依赖它的新构建暂不可用。启用前需确认符合 [构建隔离要求](../docs/runtime.md#服务器-docker-模式) 的出口策略。
+- 该服务器为 Git 拉取配置了 `BUILDER_GIT_NETWORK=builder_git_gitee`，通过专用出口访问 `gitee.com:22`。更新或重新部署时保留这个配置；缺省值 `none` 会使新启动的拉取容器无法访问 Gitee。执行构建脚本的容器继续使用 `BUILDER_BUILD_NETWORK=none`。其他服务器需自行配置符合[构建隔离要求](../docs/runtime.md#服务器-docker-模式)的网络。
 - 该主机由 `/etc/systemd/system/builder-service.service` 启动 Compose。首次启动后，在网关开放前以服务账号运行 `python3 deploy/bootstrap-admin.py`。脚本通过本机 API 轮换默认管理员密码，验证新密码可用且旧密码失效，并将新密码保存在该账号的私有配置目录。
 
 ## 构建与更新

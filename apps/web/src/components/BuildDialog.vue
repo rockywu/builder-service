@@ -9,7 +9,7 @@ import {
   enqueueBuild,
   testFetch,
   scriptCommands,
-  sshHostOf,
+  isSshRepository,
 } from '../api/store';
 import { currentUser, isAdmin } from '../auth';
 import NoticeBar from './NoticeBar.vue';
@@ -119,7 +119,7 @@ function changeRefType() {
 const missingKey = computed(
   () =>
     props.project &&
-    sshHostOf(props.project.repository) &&
+    isSshRepository(props.project.repository) &&
     props.project.sshKeyId == null,
 );
 

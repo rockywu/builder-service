@@ -2,7 +2,7 @@
 
 前端已按本契约完成（`SettingsPage.vue`、`SshKeyDialog.vue`、`ProjectDrawer.vue`、`BuildDialog.vue`，数据层见 `apps/web/src/api/store.ts` 与 `types.ts`）。后端实现必须与此一致，不得为适配后端修改已完成的 UI（见 `AGENTS.md`）。
 
-开发交接（现状、缺口清单、任务拆分、验收）见 `docs/ssh-key-handoff.md`。
+项目绑定、测试拉取和 Docker 网络配置见 [Git SSH 拉取交接](ssh-key-handoff.md)。
 
 范围：只支持 SSH 私钥拉取（`git@host:path`、`ssh://`）。不支持账号密码、HTTPS token、带口令的私钥。HTTPS 仓库继续匿名拉取。
 
