@@ -2,6 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   mkdtemp,
+  chmod,
+  symlink,
   mkdir,
   writeFile,
   readFile,
@@ -23,6 +25,7 @@ import { startDatabase, closeDatabase } from '../dist/db/client.js';
 import sharp from 'sharp';
 import { utimes } from 'node:fs/promises';
 import { runProcess } from '../dist/tools/process.js';
+import { BuildRunner } from '../dist/tools/runner.js';
 import { collectArtifacts, safePath } from '../dist/tools/paths.js';
 import {
   buildDirectoryName,
@@ -1303,7 +1306,7 @@ test(
 );
 
 test(
-  'project workspace reuses the selected commit offline and cleans ignored files on fresh builds',
+  'project workspace refreshes remote refs with warm dependencies and cleans ignored files on fresh builds',
   { timeout: 60000 },
   async (t) => {
     const f = await fixture(t),
@@ -1345,19 +1348,34 @@ test(
         'echo dirty >>marker.txt',
       ].join('\n'),
     });
-    const build = async (useCache, expected) => {
+    const build = async (
+      useCache,
+      expected,
+      refType = 'branch',
+      branch = 'main',
+    ) => {
       const j = await ok(
         f,
         s,
         'POST',
         '/api/jobs',
-        { projectId: p.id, refType: 'branch', branch: 'main', useCache },
+        { projectId: p.id, refType, branch, useCache },
         { 'idempotency-key': randomUUID() },
       );
       const done = await until(
         () => ok(f, s, 'GET', `/api/jobs/${j.id}`),
         (x) => ['succeeded', 'failed'].includes(x.status),
       );
+      if (expected === null) {
+        assert.equal(done.status, 'failed');
+        assert.match(done.error, /分支或标签已不存在/);
+        assert.equal(done.sha, '');
+        await assert.rejects(
+          access(join(await jobDirectory(f, j.id), 'build.sh')),
+          { code: 'ENOENT' },
+        );
+        return;
+      }
       assert.equal(done.status, 'succeeded', done.error);
       const dir = await jobDirectory(f, j.id);
       const manifest = JSON.parse(
@@ -1375,20 +1393,29 @@ test(
       return { sha: done.sha, dir, file: file('result'), id: j.id };
     };
     const first = await build(true, 'cold\nmain');
+    const privateBase = join(f.directory, 'work');
+    f.config.workspaceDirectory = privateBase;
+    await f.restart();
     await writeFile(join(git.repo, 'marker.txt'), 'updated\n');
     await push();
     const before = git.requests();
-    const second = await build(true, 'warm\nmainkept\n');
-    assert.equal(first.sha, second.sha);
-    assert.equal(git.requests(), before);
+    const second = await build(true, 'warm\nupdated\nkept\n');
+    assert.notEqual(first.sha, second.sha);
+    assert.ok(git.requests() > before);
     const root = join(f.config.dataDirectory, 'builds', `project-${p.id}`);
-    await access(join(root, 'source', 'marker.txt'));
+    const scopes = await readdir(privateBase);
+    assert.equal(scopes.length, 1);
+    const scope = join(privateBase, scopes[0]);
+    const checkout = join(scope, `project-${p.id}`);
+    await access(join(checkout, 'source', 'marker.txt'));
+    await assert.rejects(access(join(root, 'source')), { code: 'ENOENT' });
+    await assert.rejects(access(join(root, 'workspace')), { code: 'ENOENT' });
     assert.deepEqual(await readdir(join(root, 'outputs', String(second.id))), [
       'result',
       'sha',
     ]);
     const third = await build(false, 'cold\nupdated\nkept\n');
-    assert.notEqual(third.sha, second.sha);
+    assert.equal(third.sha, second.sha);
     assert.ok(git.requests() > before);
     assert.equal(await readFile(first.file, 'utf8'), 'cold\nmain');
     assert.deepEqual(await readdir(join(f.config.dataDirectory, 'builds')), [
@@ -1396,7 +1423,75 @@ test(
     ]);
     await ok(f, s, 'DELETE', `/api/jobs/${first.id}`);
     assert.equal((await build(true, 'warm\nupdated\nkept\n')).sha, third.sha);
+    const bare = join(f.directory, 'repo.git');
+    const setTag = async (sha) => {
+      await exec('git', [
+        '-C',
+        git.repo,
+        '-c',
+        'user.name=Fixture',
+        '-c',
+        'user.email=test@example.invalid',
+        'tag',
+        '-fa',
+        'release',
+        sha,
+        '-m',
+        'build tag',
+      ]);
+      await exec('git', [
+        '-C',
+        git.repo,
+        'push',
+        '--force',
+        bare,
+        'refs/tags/release',
+      ]);
+    };
+    await setTag(first.sha);
+    assert.equal(
+      (await build(true, 'cold\nmain', 'tag', 'release')).sha,
+      first.sha,
+    );
+    await setTag(second.sha);
+    assert.equal(
+      (await build(true, 'warm\nupdated\nkept\n', 'tag', 'release')).sha,
+      second.sha,
+    );
+    await exec('git', [
+      '--git-dir',
+      bare,
+      'update-ref',
+      '-d',
+      'refs/tags/release',
+    ]);
+    await build(true, null, 'tag', 'release');
     await ok(f, s, 'DELETE', `/api/projects/${p.id}`);
+    assert.deepEqual(await readdir(scope), []);
     assert.deepEqual(await readdir(join(f.config.dataDirectory, 'builds')), []);
   },
 );
+
+test('local workspace roots isolate data directories and reject unsafe locations', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'builder-workspace-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const workspaceDirectory = join(directory, 'work');
+  const make = (name, base = workspaceDirectory) =>
+    new BuildRunner({
+      dataDirectory: join(directory, name),
+      workspaceDirectory: base,
+      runner: 'local',
+    });
+  const a = make('first'),
+    b = make('second');
+  await a.initialize();
+  await b.initialize();
+  assert.notEqual(a.workspaceRoot, b.workspaceRoot);
+  assert.equal((await stat(a.workspaceRoot)).mode & 0o777, 0o700);
+  await assert.rejects(make('first', a.root).initialize(), /DATA_DIR/);
+  const link = join(directory, 'alias');
+  await symlink(workspaceDirectory, link);
+  await assert.rejects(make('first', link).initialize(), /普通目录/);
+  await chmod(workspaceDirectory, 0o755);
+  await assert.rejects(make('first').initialize(), /私有目录/);
+});

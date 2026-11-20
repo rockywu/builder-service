@@ -28,6 +28,9 @@ export function loadConfig() {
     host: process.env.HOST ?? '127.0.0.1',
     port,
     dataDirectory: resolve(process.env.DATA_DIR ?? '../../var'),
+    ...(process.env.BUILDER_WORKSPACE_DIR
+      ? { workspaceDirectory: resolve(process.env.BUILDER_WORKSPACE_DIR) }
+      : {}),
     logLevel: process.env.LOG_LEVEL ?? 'info',
   };
 }

@@ -167,12 +167,15 @@ export class PlatformService {
       return;
     this.pumping = true;
     try {
-      const space = await statfs(this.config.dataDirectory);
-      requireValue(
-        space.bavail * space.bsize >= 256 * 1024 * 1024,
-        '磁盘可用空间不足 256 MB，暂停领取任务。',
-        503,
-      );
+      const roots = new Set([this.runner.root, this.runner.workspaceRoot]);
+      for (const root of roots) {
+        const space = await statfs(root);
+        requireValue(
+          space.bavail * space.bsize >= 256 * 1024 * 1024,
+          '磁盘可用空间不足 256 MB，暂停领取任务。',
+          503,
+        );
+      }
       while (!this.closing && !this.maintenance && !this.recovering) {
         const j = await this.command<Job | null>('claim');
         if (!j) break;

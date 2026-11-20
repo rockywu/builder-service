@@ -9,6 +9,7 @@ import {
   readdir,
   rmdir,
   chmod,
+  realpath,
 } from 'node:fs/promises';
 import { join, resolve, relative, dirname } from 'node:path';
 import { createHash } from 'node:crypto';
@@ -74,12 +75,14 @@ const missingRemoteRef = (error: unknown) =>
 export class BuildRunner {
   readonly root: string;
   readonly mode: 'local' | 'docker';
+  workspaceRoot: string;
   constructor(
     readonly config: AppConfig,
     readonly ssh?: SshService,
   ) {
     this.root = join(config.dataDirectory, 'builds');
     this.mode = config.runner ?? 'local';
+    this.workspaceRoot = this.root;
     requireValue(
       process.env.NODE_ENV !== 'production' || this.mode === 'docker',
       '生产环境必须使用 Docker 隔离构建。',
@@ -97,6 +100,34 @@ export class BuildRunner {
     await buildDirectoryExists(this.root);
     await chmod(this.root, 0o700);
     await syncDirectory(this.config.dataDirectory);
+    if (this.config.workspaceDirectory && this.mode === 'local') {
+      const base = this.config.workspaceDirectory;
+      await mkdir(base, { recursive: true, mode: 0o700 });
+      await buildDirectoryExists(base);
+      const access = await stat(base);
+      requireValue(
+        access.uid === process.getuid?.() && (access.mode & 0o077) === 0,
+        '请为独立工作区指定服务账号专用的私有目录（0700）。',
+      );
+      const canonicalBase = await realpath(base);
+      const data = await realpath(this.config.dataDirectory);
+      requireValue(
+        canonicalBase !== data && !canonicalBase.startsWith(data + '/'),
+        '独立工作区必须位于 DATA_DIR 之外。',
+      );
+      const namespace = createHash('sha256')
+        .update(data)
+        .digest('hex')
+        .slice(0, 16);
+      const root = join(canonicalBase, namespace);
+      await ensureDirectory(root);
+      const info = await stat(root);
+      requireValue(
+        info.uid === process.getuid?.() && (info.mode & 0o077) === 0,
+        '独立工作区必须由服务账号所有，且仅该账号可访问。',
+      );
+      this.workspaceRoot = root;
+    }
     if (this.mode === 'docker') {
       requireValue(
         (process.getuid?.() ?? 0) > 0,
@@ -511,8 +542,39 @@ export class BuildRunner {
     recordCommit?: (sha: string, message: string) => Promise<void>,
   ) {
     const project = await ensureProjectDirectories(this.root, job.projectId);
-    const workspace = join(project, 'workspace');
-    const source = join(project, 'source');
+    const checkout = projectDirectory(this.workspaceRoot, job.projectId);
+    if (checkout !== project) {
+      await ensureDirectory(checkout);
+      // Both directories contain relative Git links. Move them before cache lookup;
+      // a restart after either rename can finish the other without losing offline commits.
+      const moves = [];
+      for (const name of ['workspace', 'source']) {
+        const old = join(project, name);
+        if (!(await buildDirectoryExists(old))) continue;
+        const target = join(checkout, name);
+        requireValue(
+          !(await buildDirectoryExists(target)),
+          '新旧工作区目录冲突。',
+          409,
+        );
+        moves.push({ old, target });
+      }
+      if (moves.length) {
+        requireValue(
+          (await stat(project)).dev === (await stat(checkout)).dev,
+          '迁移现有缓存需要位于同一文件系统的工作区。',
+          409,
+        );
+        await syncDirectory(this.workspaceRoot);
+        for (const { old, target } of moves) {
+          await rename(old, target);
+          await syncDirectory(checkout);
+          await syncDirectory(project);
+        }
+      }
+    }
+    const workspace = join(checkout, 'workspace');
+    const source = join(checkout, 'source');
     const gitdb = join(workspace, 'gitdb');
     const home = join(workspace, 'home');
     const dir = await this.directory(job);
@@ -610,7 +672,7 @@ export class BuildRunner {
         await ensureDirectory(gitdb);
         await command(['git', 'init', '.'], undefined, undefined, gitdb);
       }
-      const hit = reusable && job.snapshot.useCache === true;
+      const keepDependencies = reusable && job.snapshot.useCache === true;
       const git = (...args: string[]) =>
         command([
           'git',
@@ -628,20 +690,22 @@ export class BuildRunner {
         { flag: 'wx', mode: 0o600 },
       );
       let sha: string;
-      if (hit) {
-        sha = cache!.sha;
-        append(`使用项目缓存：${sha}（不拉取远端）`);
+      if (!job.refType && keepDependencies && cache!.sha === job.sha) {
+        sha = job.sha;
+        append(`使用已固定的提交：${sha}`);
       } else {
-        await rm(statePath, { force: true });
         append(
           `$ git fetch ${job.refType ? ref : job.branch + '@' + job.sha}`,
           'cmd',
         );
-        if (reusable) {
-          await git('reset', '--hard', cache!.sha);
-          await git('clean', '-ffdX');
+        if (!keepDependencies) {
+          await rm(statePath, { force: true });
+          if (reusable) {
+            await git('reset', '--hard', cache!.sha);
+            await git('clean', '-ffdX');
+          }
+          await rm(home, { recursive: true, force: true });
         }
-        await rm(home, { recursive: true, force: true });
         try {
           await this.remote(
             job.repository!,
@@ -672,8 +736,9 @@ export class BuildRunner {
         );
       }
       await git('checkout', '--force', '--detach', sha);
-      if (!hit) {
-        await git('clean', '-ffdX');
+      if (!keepDependencies) await git('clean', '-ffdX');
+      if (!keepDependencies || cache!.sha !== sha) {
+        await rm(statePath, { force: true });
         await writeFile(statePath, JSON.stringify({ identity, sha }), {
           mode: 0o600,
           flag: 'wx',
@@ -684,6 +749,7 @@ export class BuildRunner {
         const message = (await git('log', '-1', '--format=%s', sha)).trim();
         requireValue(recordCommit, '无法记录实际构建提交。', 503);
         await recordCommit(sha, message);
+        append(`已从远端更新 ${ref}，本次构建提交：${sha}`);
       }
       const workdir = await safePath(source, job.snapshot.workdir);
       requireValue((await stat(workdir)).isDirectory(), '工作目录不存在。');
@@ -878,6 +944,15 @@ export class BuildRunner {
   async removeWorkspace(id: number) {
     if (!(await buildDirectoryExists(this.root))) return;
     const project = projectDirectory(this.root, id);
+    if (this.workspaceRoot !== this.root) {
+      const checkout = projectDirectory(this.workspaceRoot, id);
+      if (await buildDirectoryExists(checkout)) {
+        await rm(join(checkout, 'source'), { recursive: true, force: true });
+        await rm(join(checkout, 'workspace'), { recursive: true, force: true });
+        await rmdir(checkout);
+        await syncDirectory(this.workspaceRoot);
+      }
+    }
     if (!(await buildDirectoryExists(project))) return;
     await rm(join(project, 'source'), { recursive: true, force: true });
     await rm(join(project, 'workspace'), { recursive: true, force: true });
