@@ -14,16 +14,6 @@ const error = ref(
   route.query.error === 'service' ? '无法确认登录状态，请重新登录。' : '',
 );
 
-const demoAccounts = [
-  { username: 'admin', password: 'admin123456', role: '管理员' },
-  { username: 'tester', password: 'tester123456', role: '普通用户' },
-];
-function fill(account: (typeof demoAccounts)[number]) {
-  username.value = account.username;
-  password.value = account.password;
-  error.value = '';
-}
-
 async function submit() {
   if (pending.value) return;
   if (!username.value.trim() || !password.value) {
@@ -115,24 +105,6 @@ async function submit() {
               >登录</el-button
             >
           </form>
-
-          <div class="mt-6 border-t border-dashed border-slate-200 pt-4">
-            <p class="mb-2 text-xs text-slate-500">演示账号（点击填入）</p>
-            <div class="grid grid-cols-2 gap-2">
-              <button
-                v-for="account in demoAccounts"
-                :key="account.username"
-                type="button"
-                class="rounded-lg border border-slate-200 px-3 py-2 text-left transition hover:border-brand-300 hover:bg-brand-50"
-                @click="fill(account)"
-              >
-                <span class="block font-mono text-sm text-slate-800">{{
-                  account.username
-                }}</span>
-                <span class="text-xs text-slate-500">{{ account.role }}</span>
-              </button>
-            </div>
-          </div>
         </div>
 
         <RouterLink

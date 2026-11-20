@@ -104,7 +104,7 @@ apps/web/src
 - 点阵背景，居中登录卡片：账号、密码（可显示）、错误提示（`role="alert"`）、登录按钮（loading 防重复提交）。
 - 卡片下方蓝色大卡片「只需要下载构建版本？→ 前往项目下载」，右上角「项目下载」胶囊按钮。
 - 登录成功跳 `/admin/projects`。
-- 「演示账号（点击填入）」区块为 Mock 专用，**联调后删除**。
+- 登录页不显示演示账号填充区。
 
 ### 4.2 项目 `/admin/projects`
 
@@ -295,7 +295,7 @@ Mock 通过响应式 `db` 和每秒运行的 `tick()` 实现实时变化，真�
 ## 7. 联调后清理清单
 
 - [ ] 删除 `AdminLayout` 中「UI 演示环境」横条。
-- [ ] 删除 `LoginPage` 中演示账号区块（`demoAccounts`）。
+- [x] 删除 `LoginPage` 中演示账号区块。
 - [ ] 把 `ReleasesPage` 的 `demoDownload` 和 `ProjectDownloadsPage` 的 `download()` 改为真实下载链接。
 - [ ] 删除 `src/mocks/`，`auth.ts` 不再引用 Mock。
 - [ ] 更新 README 的预览说明。
