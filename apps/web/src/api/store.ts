@@ -104,7 +104,9 @@ async function performRefresh() {
     // Another session may have deleted the project while this browser was offline.
     for (let i = localStorage.length - 1; i >= 0; i--) {
       const key = localStorage.key(i);
-      const slug = key?.match(/^builder:build-branch:\d+:([^:]+)$/)?.[1];
+      const slug = key?.match(
+        /^builder:build-(?:branch|cache):\d+:([^:]+)$/,
+      )?.[1];
       if (key && slug && !slugs.has(slug)) localStorage.removeItem(key);
     }
   } catch {

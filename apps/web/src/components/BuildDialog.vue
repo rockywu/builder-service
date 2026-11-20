@@ -27,7 +27,7 @@ const branch = ref('');
 const refType = ref<GitRefType>('branch');
 const fetching = ref(false);
 const pending = ref(false);
-const useCache = ref(false);
+const useCache = ref(true);
 const tested = ref<{ selection: string; error?: string } | null>(null);
 const refs = ref<{
   project: string;
@@ -62,6 +62,11 @@ const branchPreferenceKey = computed(() =>
     ? `builder:build-branch:${currentUser.value.id}:${props.project.slug}`
     : '',
 );
+const cachePreferenceKey = computed(() =>
+  props.project && currentUser.value
+    ? `builder:build-cache:${currentUser.value.id}:${props.project.slug}`
+    : '',
+);
 
 const hostsLoaded = ref(false);
 watch(open, (visible) => {
@@ -74,13 +79,16 @@ watch(open, (visible) => {
       .catch(() => {});
   }
   tested.value = null;
-  useCache.value = false;
+  useCache.value = true;
   let previous: string | null = null;
   try {
     if (branchPreferenceKey.value)
       previous = localStorage.getItem(branchPreferenceKey.value);
+    if (cachePreferenceKey.value)
+      useCache.value =
+        localStorage.getItem(cachePreferenceKey.value) !== 'false';
   } catch {
-    // A browser may disable storage; the last fetched branch is still available.
+    // Storage can be unavailable; use the dialog defaults.
   }
   refType.value = previous?.startsWith('refs/tags/') ? 'tag' : 'branch';
   branch.value =
@@ -99,6 +107,16 @@ function rememberRef(value: string) {
     // Storage is optional and must not interrupt the build flow.
   }
 }
+
+function rememberCache() {
+  if (!cachePreferenceKey.value) return;
+  try {
+    localStorage.setItem(cachePreferenceKey.value, String(useCache.value));
+  } catch {
+    // Storage is optional and must not interrupt the build flow.
+  }
+}
+
 function changeRefType() {
   tested.value = null;
   branch.value =
@@ -287,7 +305,9 @@ async function submit() {
       <NoticeBar v-if="result" :tone="result.error ? 'warning' : 'success'">
         {{ result.error || '测试拉取成功。' }}
       </NoticeBar>
-      <el-checkbox v-model="useCache">使用构建缓存</el-checkbox>
+      <el-checkbox v-model="useCache" @change="rememberCache"
+        >使用构建缓存</el-checkbox
+      >
       <p class="text-sm text-slate-500">
         {{
           useCache
