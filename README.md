@@ -74,7 +74,7 @@ CI=true npm run test:platform -w @builder/server
 npm start
 ```
 
-`npm run build` 输出 `apps/server/dist` 和 `apps/web/dist`。`npm start` 仅启动编译后的 API，前端产物需由静态文件服务器提供；生产环境的 Nginx/systemd 配置不在本次交付中。使用 history 路由时，静态服务器需将前端页面路径回退到 `index.html`，`/api` 交给后端。
+`npm run build` 输出 `apps/server/dist` 和 `apps/web/dist`。`npm start` 仅启动编译后的 API。Linux 服务器上的 Docker Compose、Nginx 和 systemd 配置见 [Docker 部署手册](deploy/README.md)。
 
 ## 目录
 

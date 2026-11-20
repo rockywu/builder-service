@@ -1,4 +1,5 @@
 import { resolve } from 'node:path';
+import { isIP } from 'node:net';
 
 export function loadConfig() {
   const port = Number(process.env.PORT ?? 3000);
@@ -18,10 +19,17 @@ export function loadConfig() {
     throw new Error('BUILDER_RUNNER must be local or docker');
   if (process.env.NODE_ENV === 'production' && runner !== 'docker')
     throw new Error('Production builds require Docker isolation');
+  const gitDns = (process.env.BUILDER_GIT_DNS ?? '')
+    .split(',')
+    .map((address) => address.trim())
+    .filter(Boolean);
+  if (gitDns.length > 3 || gitDns.some((address) => isIP(address) === 0))
+    throw new Error('BUILDER_GIT_DNS must contain up to three IP addresses');
   return {
     runner: runner as 'local' | 'docker',
     buildImage: process.env.BUILDER_IMAGE ?? 'builder-runtime:node24',
     gitNetwork: process.env.BUILDER_GIT_NETWORK ?? 'none',
+    gitDns,
     buildNetwork: process.env.BUILDER_BUILD_NETWORK ?? 'none',
     secretKey: process.env.BUILDER_SECRET_KEY ?? '',
     appOrigin,
@@ -37,11 +45,21 @@ export function loadConfig() {
 
 export type AppConfig = Omit<
   ReturnType<typeof loadConfig>,
-  'runner' | 'buildImage' | 'gitNetwork' | 'buildNetwork' | 'secretKey'
+  | 'runner'
+  | 'buildImage'
+  | 'gitNetwork'
+  | 'gitDns'
+  | 'buildNetwork'
+  | 'secretKey'
 > &
   Partial<
     Pick<
       ReturnType<typeof loadConfig>,
-      'runner' | 'buildImage' | 'gitNetwork' | 'buildNetwork' | 'secretKey'
+      | 'runner'
+      | 'buildImage'
+      | 'gitNetwork'
+      | 'gitDns'
+      | 'buildNetwork'
+      | 'secretKey'
     >
   >;

@@ -1,0 +1,65 @@
+name: builder-service
+
+services:
+  api:
+    image: builder-service-api:${BUILDER_REVISION:?Set BUILDER_REVISION}
+    user: '${BUILDER_UID:?Set BUILDER_UID}:${BUILDER_GID:?Set BUILDER_GID}'
+    group_add:
+      - '${DOCKER_SOCKET_GID:?Set DOCKER_SOCKET_GID}'
+    dns: [1.1.1.1, 8.8.8.8]
+    # The scheduler records its PID in a persistent lock; use the host PID namespace
+    # so a restart can distinguish a dead process from the new one.
+    pid: host
+    init: true
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ['no-new-privileges:true']
+    ports:
+      - '127.0.0.1:18111:3000'
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,noexec,size=64m
+    volumes:
+      # Only the trusted scheduler receives the socket. Job containers do not.
+      - /var/run/docker.sock:/var/run/docker.sock
+      - '${BUILDER_ENV_FILE:?Set BUILDER_ENV_FILE}:/app/apps/server/.env:ro'
+      # Task paths passed to Docker must resolve identically on the host.
+      - '${BUILDER_DATA_DIR:?Set BUILDER_DATA_DIR}:${BUILDER_DATA_DIR}'
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'node',
+          '-e',
+          'fetch("http://127.0.0.1:3000/api/health").then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))',
+        ]
+      interval: 15s
+      timeout: 3s
+      retries: 4
+    stop_grace_period: 30s
+    restart: 'on-failure:3'
+    mem_limit: 768m
+    pids_limit: 128
+    logging: &bounded_logs
+      options:
+        max-size: '10m'
+        max-file: '3'
+
+  web:
+    image: builder-service-web:${BUILDER_REVISION:?Set BUILDER_REVISION}
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ['no-new-privileges:true']
+    ports:
+      - '127.0.0.1:18110:8080'
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,noexec,size=32m
+    healthcheck:
+      test:
+        ['CMD', 'wget', '-q', '-O', '/dev/null', 'http://127.0.0.1:8080/login']
+      interval: 10s
+      timeout: 3s
+      retries: 4
+    restart: 'on-failure:3'
+    mem_limit: 128m
+    pids_limit: 64
+    logging: *bounded_logs

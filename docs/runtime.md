@@ -64,7 +64,7 @@ node apps/server/dist/tools/restore.js /absolute/backup/id /absolute/new-data-di
 
 ## 服务器 Docker 模式
 
-本轮不执行 Docker 部署。服务器配置使用 `BUILDER_RUNNER=docker`，`NODE_ENV=production` 禁止本机模式。
+应用和任务是不同的镜像。完整部署及升级见 [Docker 部署手册](../deploy/README.md)。服务器配置使用 `BUILDER_RUNNER=docker`，`NODE_ENV=production` 禁止本机模式。
 
 ```bash
 docker build -t builder-runtime:node24 -f tools/Dockerfile .
@@ -74,7 +74,7 @@ docker build -t builder-runtime:node24 -f tools/Dockerfile .
 
 Git 拉取单独使用 `BUILDER_GIT_NETWORK`，部署方必须配置禁止管理网、私网及元数据端点的专用出口策略。默认 `none` 无法访问远端仓库；`bridge` 和 `host` 被拒绝。仅命名一个网络不代表已经落实出口限制，部署时须核对实际防火墙。需要联网安装依赖的项目，也必须先确认受限出口方案，当前不能直接开放构建网络。服务端检测镜像或配置不可用时暂停领取并在队列接口返回原因，不退回本机执行。
 
-Docker 执行、容器恢复、服务器网络隔离及SSH 凭据挂载均须在目标 Linux 环境单独验收。
+如果宿主 DNS 位于受限网段，可通过 `BUILDER_GIT_DNS` 为 Git 容器指定防火墙允许的 DNS 地址，以逗号分隔。Docker 执行、容器恢复、服务器网络隔离及 SSH 凭据挂载均须在目标 Linux 环境单独验收。
 
 ## 检查与测试
 

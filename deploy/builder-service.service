@@ -1,0 +1,17 @@
+[Unit]
+Description=Builder Service Docker Compose stack
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+User=dev
+WorkingDirectory=/opt/builder-service
+ExecStart=/usr/bin/docker compose --env-file /opt/builder-service/deploy/.env -f /opt/builder-service/deploy/compose.yml up -d --wait --wait-timeout 90 --no-build --pull never
+ExecStop=/usr/bin/docker compose --env-file /opt/builder-service/deploy/.env -f /opt/builder-service/deploy/compose.yml stop
+TimeoutStartSec=120
+TimeoutStopSec=45
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

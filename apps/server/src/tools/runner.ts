@@ -181,6 +181,11 @@ export class BuildRunner {
       });
     }
     const name = this.name(id);
+    const newHostFile = '/run/builder-known-hosts';
+    const dns =
+      network && network !== 'none' && network === this.config.gitNetwork
+        ? (this.config.gitDns ?? []).flatMap((address) => ['--dns', address])
+        : [];
     const abort = () => {
       void runProcess('docker', ['stop', '--time', '2', name], {
         timeout: 10_000,
@@ -206,6 +211,7 @@ export class BuildRunner {
           '--cpus=2',
           '--network',
           network ?? 'none',
+          ...dns,
           ...(credentials
             ? [
                 '--mount',
