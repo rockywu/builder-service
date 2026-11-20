@@ -174,9 +174,7 @@ export class BuildRunner {
         cwd: directory,
         homeDirectory: join(directory, '.home'),
         markerDirectory: task?.history ?? directory,
-        ...(credentials
-          ? { gitSshCommand: sshCommand(credentials.directory) }
-          : {}),
+        ...(credentials ? { gitSshCommand: sshCommand(credentials) } : {}),
         ...(signal ? { signal } : {}),
         ...(output ? { output } : {}),
         timeout,
@@ -212,6 +210,12 @@ export class BuildRunner {
             ? [
                 '--mount',
                 `type=bind,src=${credentials.directory},dst=/run/creds,readonly`,
+                ...(credentials.firstConnection
+                  ? [
+                      '--mount',
+                      `type=bind,src=${join(credentials.directory, 'known_hosts')},dst=${newHostFile}`,
+                    ]
+                  : []),
               ]
             : []),
           '--tmpfs',
@@ -256,7 +260,7 @@ export class BuildRunner {
           '--env',
           'GIT_TERMINAL_PROMPT=0',
           '--env',
-          `GIT_SSH_COMMAND=${credentials ? sshCommand('/run/creds') : 'ssh -F /dev/null -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityFile=none -o IdentityAgent=none -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=yes'}`,
+          `GIT_SSH_COMMAND=${credentials ? sshCommand(credentials, '/run/creds', credentials.firstConnection ? newHostFile : undefined) : 'ssh -F /dev/null -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityFile=none -o IdentityAgent=none -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=yes'}`,
           this.config.buildImage ?? 'builder-runtime:node24',
           ...args,
         ],
@@ -293,7 +297,10 @@ export class BuildRunner {
     );
     try {
       const result = await operation(credentials);
-      if (credentials) await this.ssh!.used(credentials.keyId);
+      if (credentials) {
+        await this.ssh!.rememberHost(credentials);
+        await this.ssh!.used(credentials.keyId);
+      }
       return result;
     } catch (e) {
       if (credentials && e instanceof ProcessExitError) {
@@ -304,7 +311,7 @@ export class BuildRunner {
         )
           throw new PlatformError(
             400,
-            `主机 ${credentials.host} 未受信任或主机公钥已变化`,
+            `主机 ${credentials.host} 的 SSH 公钥与已记录的公钥不一致。请联系管理员核实。`,
           );
         if (/Permission denied|Authentication failed/.test(e.output))
           throw new PlatformError(

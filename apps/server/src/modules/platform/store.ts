@@ -169,12 +169,15 @@ export function createPlatformStore(db: Database.Database) {
       lastUsedAt: r.last_used_at === null ? null : Number(r.last_used_at),
     }));
   };
-  const knownHosts = (): KnownHost[] =>
+  const knownHosts = (host?: string, port?: number): KnownHost[] =>
     (
-      db.prepare('SELECT * FROM known_hosts ORDER BY id').all() as Record<
-        string,
-        unknown
-      >[]
+      (host === undefined
+        ? db.prepare('SELECT * FROM known_hosts ORDER BY id').all()
+        : db
+            .prepare(
+              'SELECT * FROM known_hosts WHERE host=? AND port=? ORDER BY id',
+            )
+            .all(host, port)) as Record<string, unknown>[]
     ).map((r) => ({
       id: Number(r.id),
       host: String(r.host),
@@ -303,8 +306,38 @@ export function createPlatformStore(db: Database.Database) {
         requireValue(row, '拉取凭据已删除', 400);
         return {
           encryptedPrivateKey: row.encrypted_private_key,
-          hosts: knownHosts(),
+          hosts:
+            typeof d.host === 'string'
+              ? knownHosts(d.host, Number(d.port))
+              : [],
         };
+      }
+      case 'rememberHost': {
+        requireValue(!c.actor, '无权记录主机公钥。', 403);
+        const host = String(d.host),
+          port = Number(d.port);
+        const key = d.key as ScannedHostKey;
+        const existing = knownHosts(host, port);
+        // The database worker runs this action in one transaction. A concurrent
+        // first connection can confirm the same key but cannot replace it.
+        if (existing.length) {
+          requireValue(
+            existing.some((record) => record.publicKey === key.publicKey),
+            `主机 ${host} 的 SSH 公钥与已记录的公钥不一致。`,
+          );
+        } else {
+          db.prepare(
+            'INSERT INTO known_hosts(host,port,key_type,public_key,fingerprint,created_at) VALUES(?,?,?,?,?,?)',
+          ).run(
+            host,
+            port,
+            key.keyType,
+            key.publicKey,
+            key.fingerprint,
+            Date.now(),
+          );
+        }
+        return null;
       }
       case 'sshKeyUsed':
         requireValue(!c.actor, '无权修改凭据使用记录。', 403);

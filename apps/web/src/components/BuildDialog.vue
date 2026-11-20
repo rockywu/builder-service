@@ -8,7 +8,6 @@ import {
   db,
   enqueueBuild,
   testFetch,
-  loadKnownHosts,
   scriptCommands,
   sshHostOf,
 } from '../api/store';
@@ -68,16 +67,8 @@ const cachePreferenceKey = computed(() =>
     : '',
 );
 
-const hostsLoaded = ref(false);
 watch(open, (visible) => {
   if (!visible || !props.project) return;
-  /* 受信任主机仅管理员可读；加载失败时不提示主机问题，不影响拉取 */
-  if (visible && isAdmin.value) {
-    hostsLoaded.value = false;
-    loadKnownHosts()
-      .then(() => (hostsLoaded.value = true))
-      .catch(() => {});
-  }
   tested.value = null;
   useCache.value = true;
   let previous: string | null = null;
@@ -124,21 +115,13 @@ function changeRefType() {
   rememberRef(branch.value);
 }
 
-/** 拉取前的凭据检查：只提示，不阻止拉取 */
-const credentialIssue = computed(() => {
-  const target = props.project && sshHostOf(props.project.repository);
-  if (!target) return null;
-  if (props.project!.sshKeyId == null) return { kind: 'missing' as const };
-  if (!isAdmin.value || !hostsLoaded.value) return null;
-  const trusted = db.knownHosts.some(
-    (h) => h.host === target.host && h.port === target.port,
-  );
-  if (trusted) return null;
-  return {
-    kind: 'untrusted' as const,
-    host: target.port === 22 ? target.host : `${target.host}:${target.port}`,
-  };
-});
+/** 缺少密钥时提示，不阻止点击拉取。 */
+const missingKey = computed(
+  () =>
+    props.project &&
+    sshHostOf(props.project.repository) &&
+    props.project.sshKeyId == null,
+);
 
 function configure() {
   if (!props.project) return;
@@ -232,7 +215,7 @@ async function submit() {
         </div>
       </div>
 
-      <NoticeBar v-if="credentialIssue?.kind === 'missing'" tone="warning">
+      <NoticeBar v-if="missingKey" tone="warning">
         该仓库使用 SSH 地址但未绑定拉取密钥，拉取会失败。
         <button
           v-if="isAdmin"
@@ -243,20 +226,6 @@ async function submit() {
           去配置
         </button>
         <template v-else>请联系管理员配置。</template>
-      </NoticeBar>
-      <NoticeBar
-        v-else-if="credentialIssue?.kind === 'untrusted'"
-        tone="warning"
-      >
-        主机 <code class="font-mono">{{ credentialIssue.host }}</code>
-        尚未加入受信任主机，拉取会失败。
-        <a
-          href="/admin/settings"
-          target="_blank"
-          rel="noopener"
-          class="font-medium whitespace-nowrap underline"
-          >前往设置</a
-        >
       </NoticeBar>
 
       <div>

@@ -11,8 +11,6 @@ import type {
   TestStatus,
   LogLine,
   SshKey,
-  KnownHost,
-  ScannedHostKey,
 } from './types';
 import { all, request, ApiError } from './client';
 import { ElMessage } from 'element-plus';
@@ -25,7 +23,6 @@ export const db = reactive({
   settings: { maxConcurrent: 1 },
   /** 仅管理员按需加载，不参与全局轮询刷新。 */
   sshKeys: [] as SshKey[],
-  knownHosts: [] as KnownHost[],
 });
 export const now = ref(Date.now());
 export const OCCUPYING: JobStatus[] = ['running', 'canceling'];
@@ -76,7 +73,6 @@ export function clearAdmin() {
   db.releases = [];
   db.users = [];
   db.sshKeys = [];
-  db.knownHosts = [];
 }
 async function performRefresh() {
   if (!role) return;
@@ -263,12 +259,9 @@ export async function deleteUser(id: number, _operatorId: number) {
 export async function saveSettings(maxConcurrent: number) {
   return mutation('/settings', 'PUT', { maxConcurrent });
 }
-/* Git SSH 密钥与受信任主机：独立加载，失败只影响所在区域。 */
+/* Git SSH 密钥按需独立加载。 */
 export async function loadSshKeys() {
   db.sshKeys = merge(db.sshKeys, await all<SshKey>('/ssh-keys'));
-}
-export async function loadKnownHosts() {
-  db.knownHosts = merge(db.knownHosts, await all<KnownHost>('/known-hosts'));
 }
 async function keyMutation<T>(path: string, method: string, body?: unknown) {
   const result = await mutation<T>(path, method, body);
@@ -289,29 +282,6 @@ export async function updateSshKey(
 }
 export async function deleteSshKey(id: number) {
   return keyMutation<void>(`/ssh-keys/${id}`, 'DELETE');
-}
-export async function scanKnownHost(host: string, port: number) {
-  const result = await request<{ items: ScannedHostKey[] }>(
-    '/known-hosts/scan',
-    { method: 'POST', body: { host, port } },
-  );
-  return result.items;
-}
-export async function addKnownHosts(
-  host: string,
-  port: number,
-  keys: ScannedHostKey[],
-) {
-  const result = await request<KnownHost[]>('/known-hosts', {
-    method: 'POST',
-    body: { host, port, keys },
-  });
-  await loadKnownHosts().catch(() => {});
-  return result;
-}
-export async function deleteKnownHost(id: number) {
-  await request<void>(`/known-hosts/${id}`, { method: 'DELETE' });
-  await loadKnownHosts().catch(() => {});
 }
 /** 从 git@host:path 或 ssh://[user@]host[:port]/path 解析主机与端口；HTTPS 返回 null。 */
 export function sshHostOf(repository: string) {

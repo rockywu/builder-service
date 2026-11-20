@@ -51,23 +51,6 @@ export interface SshKey {
   lastUsedAt: number | null;
 }
 
-/** 受信任的仓库主机公钥，拉取时严格校验。 */
-export interface KnownHost {
-  id: number;
-  host: string;
-  port: number;
-  keyType: string;
-  fingerprint: string;
-  createdAt: number;
-}
-
-/** 扫描得到、尚未保存的主机公钥。 */
-export interface ScannedHostKey {
-  keyType: string;
-  publicKey: string;
-  fingerprint: string;
-}
-
 export type ProjectInput = Pick<
   Project,
   | 'name'

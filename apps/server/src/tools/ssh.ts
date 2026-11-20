@@ -35,8 +35,13 @@ const algorithms = new Set([
   'ecdsa-sha2-nistp521',
 ]);
 const quote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
-export function sshCommand(directory: string) {
-  return `ssh -F /dev/null -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o GlobalKnownHostsFile=/dev/null -i ${quote(join(directory, 'id'))} -o UserKnownHostsFile=${quote(join(directory, 'known_hosts'))} -o StrictHostKeyChecking=yes`;
+export function sshCommand(
+  credentials: SshCredentials,
+  directory = credentials.directory,
+  knownHostsFile = join(directory, 'known_hosts'),
+) {
+  const checking = credentials.firstConnection ? 'accept-new' : 'yes';
+  return `ssh -F /dev/null -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o HashKnownHosts=no -o CheckHostIP=no -i ${quote(join(directory, 'id'))} -o HostKeyAlias=${quote(credentials.hostToken)} -o UserKnownHostsFile=${quote(knownHostsFile)} -o StrictHostKeyChecking=${checking}`;
 }
 export function normalizeHost(input: unknown): string {
   requireValue(
@@ -312,33 +317,54 @@ export class SshService {
     this.secret();
     const data = (await this.db.request('platform', {
       action: 'sshKeyCredentials',
-      data: { id: keyId },
+      data: { id: keyId, ...target },
     })) as { encryptedPrivateKey: Uint8Array; hosts: KnownHost[] };
-    const hosts = data.hosts.filter(
-      (h) => normalizeHost(h.host) === target.host && h.port === target.port,
-    );
-    requireValue(hosts.length, `主机 ${target.host} 未受信任或主机公钥已变化`);
+    const hosts = data.hosts;
+    const hostToken =
+      target.port === 22 ? target.host : `[${target.host}]:${target.port}`;
     const dir = await this.temporary();
     let privateKey: Buffer | undefined;
     try {
       privateKey = this.decrypt(data.encryptedPrivateKey);
       await writeFile(join(dir, 'id'), privateKey, { mode: 0o600, flag: 'wx' });
-      const token =
-        target.port === 22
-          ? `${target.host},[${target.host}]:22`
-          : `[${target.host}]:${target.port}`;
       await writeFile(
         join(dir, 'known_hosts'),
-        hosts.map((h) => `${token} ${h.publicKey}`).join('\n') + '\n',
+        hosts.map((h) => `${hostToken} ${h.publicKey}\n`).join(''),
         { mode: 0o600, flag: 'wx' },
       );
-      return { directory: dir, keyId, host: target.host };
+      return {
+        directory: dir,
+        keyId,
+        ...target,
+        hostToken,
+        firstConnection: hosts.length === 0,
+      };
     } catch (e) {
       await rm(dir, { recursive: true, force: true });
       throw e;
     } finally {
       privateKey?.fill(0);
     }
+  }
+  async rememberHost(credentials: SshCredentials) {
+    if (!credentials.firstConnection) return;
+    const { host, port, hostToken } = credentials;
+    const record = (
+      await readFile(join(credentials.directory, 'known_hosts'), 'utf8')
+    ).trim();
+    const parts = record.split(/[ \t]+/);
+    requireValue(
+      !record.includes('\n') && parts.length === 3 && parts[0] === hostToken,
+      `无法记录主机 ${host} 的 SSH 公钥。`,
+      502,
+    );
+    const { bits: _bits, ...key } = await this.publicKey(
+      `${parts[1]} ${parts[2]}`,
+    );
+    await this.db.request('platform', {
+      action: 'rememberHost',
+      data: { host, port, key },
+    });
   }
   async used(keyId: number) {
     await this.db.request('platform', {

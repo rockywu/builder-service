@@ -6,7 +6,6 @@ import { Upload, QuestionFilled } from '@element-plus/icons-vue';
 import type { Project, ProjectInput } from '../api/types';
 import {
   db,
-  loadKnownHosts,
   loadSshKeys,
   saveProject,
   scriptCommands,
@@ -79,29 +78,11 @@ const rules: FormRules<ProjectInput> = {
 
 /* SSH 密钥：抽屉打开时按需加载，失败不影响保存其他字段 */
 const keysError = ref(false);
-const hostsLoaded = ref(false);
 async function loadCredentials() {
   keysError.value = false;
-  hostsLoaded.value = false;
-  await Promise.all([
-    loadSshKeys().catch(() => (keysError.value = true)),
-    loadKnownHosts()
-      .then(() => (hostsLoaded.value = true))
-      .catch(() => {}),
-  ]);
+  await loadSshKeys().catch(() => (keysError.value = true));
 }
 const repositoryHost = computed(() => sshHostOf(form.repository));
-const untrustedHost = computed(() => {
-  const target = repositoryHost.value;
-  if (!target || form.sshKeyId == null || !hostsLoaded.value) return '';
-  return db.knownHosts.some(
-    (h) => h.host === target.host && h.port === target.port,
-  )
-    ? ''
-    : target.port === 22
-      ? target.host
-      : `${target.host}:${target.port}`;
-});
 
 watch(open, (visible) => {
   if (!visible) return;
@@ -293,17 +274,6 @@ async function submit() {
               >
             </template>
           </el-select>
-          <NoticeBar v-if="untrustedHost" tone="warning" class="mt-1.5 w-full">
-            主机 <code class="font-mono">{{ untrustedHost }}</code>
-            尚未加入受信任主机，拉取会失败。
-            <a
-              href="/admin/settings"
-              target="_blank"
-              rel="noopener"
-              class="font-medium whitespace-nowrap underline"
-              >前往设置</a
-            >
-          </NoticeBar>
         </el-form-item>
         <el-form-item prop="workdir">
           <template #label>

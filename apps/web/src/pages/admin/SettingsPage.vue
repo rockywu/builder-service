@@ -1,23 +1,20 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue';
 import { ElMessage } from 'element-plus';
-import { Plus, Lock, Monitor, Refresh } from '@element-plus/icons-vue';
-import type { KnownHost, SshKey } from '../../api/types';
+import { Plus, Lock, Refresh } from '@element-plus/icons-vue';
+import type { SshKey } from '../../api/types';
 import {
   OCCUPYING,
   db,
-  deleteKnownHost,
   deleteSshKey,
-  loadKnownHosts,
   loadSshKeys,
   now,
   saveSettings,
 } from '../../api/store';
 import { confirmDelete } from '../../utils/confirm';
-import { formatDate, relativeTime } from '../../utils/format';
+import { relativeTime } from '../../utils/format';
 import PageHeader from '../../components/PageHeader.vue';
 import SshKeyDialog from '../../components/SshKeyDialog.vue';
-import KnownHostDialog from '../../components/KnownHostDialog.vue';
 
 const value = ref(db.settings.maxConcurrent);
 const saving = ref(false);
@@ -107,44 +104,8 @@ async function removeKey(key: SshKey) {
   }
 }
 
-/* 受信任主机 */
-const hostsLoading = ref(false);
-const hostsError = ref('');
-async function reloadHosts() {
-  hostsLoading.value = true;
-  hostsError.value = '';
-  try {
-    await loadKnownHosts();
-  } catch (error) {
-    hostsError.value = error instanceof Error ? error.message : '加载失败';
-  } finally {
-    hostsLoading.value = false;
-  }
-}
-const hostDialog = ref(false);
-const deletingHost = ref<number | null>(null);
-async function removeHost(item: KnownHost) {
-  const ok = await confirmDelete({
-    title: '移除受信任主机',
-    target: `${item.host}:${item.port} · ${item.keyType}`,
-    scope: ['该主机公钥的信任记录'],
-    note: `${item.fingerprint}。移除后，若该主机没有其他受信任公钥，使用它的项目将无法拉取。`,
-  });
-  if (!ok) return;
-  deletingHost.value = item.id;
-  try {
-    await deleteKnownHost(item.id);
-    ElMessage.success(`已移除 ${item.host} 的 ${item.keyType} 公钥`);
-  } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : '移除失败');
-  } finally {
-    deletingHost.value = null;
-  }
-}
-
 onMounted(() => {
   void reloadKeys();
-  void reloadHosts();
 });
 </script>
 
@@ -222,12 +183,12 @@ onMounted(() => {
   <div class="mt-10 mb-4">
     <h2 class="text-base font-semibold text-slate-900">Git 访问</h2>
     <p class="mt-1 text-sm text-slate-500">
-      拉取 SSH 地址（git@ / ssh://）的仓库需要密钥和受信任主机；HTTPS
+      拉取 SSH 地址（git@ / ssh://）的仓库需在项目中绑定 SSH 密钥；HTTPS
       仓库匿名拉取，不使用这里的配置。
     </p>
   </div>
 
-  <div class="grid gap-6 xl:grid-cols-[minmax(0,1.35fr)_minmax(0,1fr)]">
+  <div>
     <section
       class="flex flex-col overflow-hidden rounded-xl border border-slate-200 bg-white"
     >
@@ -349,102 +310,7 @@ onMounted(() => {
         >，不要使用个人账号的密钥。
       </p>
     </section>
-
-    <section
-      class="flex flex-col overflow-hidden rounded-xl border border-slate-200 bg-white"
-    >
-      <div class="flex flex-wrap items-start justify-between gap-4 p-6">
-        <div class="min-w-0 flex-1">
-          <h3 class="text-base font-semibold text-slate-900">受信任主机</h3>
-          <p class="mt-1 text-sm text-slate-500">
-            拉取时严格校验仓库主机公钥，未列出的主机会被拒绝连接。
-          </p>
-        </div>
-        <el-button :icon="Plus" @click="hostDialog = true">添加主机</el-button>
-      </div>
-
-      <div
-        v-loading="hostsLoading"
-        class="flex-1 border-t border-slate-100"
-        :class="{ 'min-h-24': hostsLoading && !db.knownHosts.length }"
-      >
-        <div v-if="hostsError" class="px-6 py-8 text-center">
-          <p class="text-sm text-slate-700">主机列表加载失败</p>
-          <p class="mt-1 text-xs text-slate-500">{{ hostsError }}</p>
-          <el-button
-            class="!mt-3"
-            size="small"
-            :icon="Refresh"
-            @click="reloadHosts"
-            >重试</el-button
-          >
-        </div>
-        <div
-          v-else-if="!db.knownHosts.length && !hostsLoading"
-          class="px-6 py-10 text-center"
-        >
-          <span
-            class="mx-auto grid size-10 place-items-center rounded-full bg-slate-100 text-slate-400"
-            ><el-icon :size="18"><Monitor /></el-icon
-          ></span>
-          <p class="mt-3 text-sm font-medium text-slate-700">
-            还没有受信任主机
-          </p>
-          <p class="mt-1 text-xs text-slate-500">
-            添加仓库所在的主机（如 github.com）后才能通过 SSH 拉取。
-          </p>
-        </div>
-        <ul v-else class="divide-y divide-slate-100">
-          <li
-            v-for="item in db.knownHosts"
-            :key="item.id"
-            class="flex flex-wrap items-center gap-x-3 gap-y-2 px-6 py-4 sm:flex-nowrap"
-          >
-            <span
-              class="grid size-9 shrink-0 place-items-center rounded-lg bg-slate-100 text-slate-500"
-              ><el-icon :size="16"><Monitor /></el-icon
-            ></span>
-            <div class="min-w-0 flex-1">
-              <p class="flex min-w-0 items-center gap-2">
-                <span
-                  class="truncate font-mono text-sm font-medium text-slate-900"
-                  >{{ item.host
-                  }}<span v-if="item.port !== 22" class="text-slate-400"
-                    >:{{ item.port }}</span
-                  ></span
-                >
-                <span
-                  class="shrink-0 rounded bg-slate-100 px-1.5 py-px text-[11px] text-slate-500"
-                  >{{ item.keyType }}</span
-                >
-              </p>
-              <p
-                class="mt-0.5 truncate font-mono text-xs text-slate-500"
-                :title="`${item.fingerprint} · 添加于 ${formatDate(item.createdAt)}`"
-              >
-                {{ item.fingerprint }}
-              </p>
-            </div>
-            <div class="flex shrink-0 items-center max-sm:w-full max-sm:pl-12">
-              <el-button
-                link
-                type="danger"
-                :loading="deletingHost === item.id"
-                @click="removeHost(item)"
-                >移除</el-button
-              >
-            </div>
-          </li>
-        </ul>
-      </div>
-      <p
-        class="border-t border-slate-100 bg-slate-50/60 px-6 py-3 text-xs text-slate-500"
-      >
-        主机公钥变化时拉取会失败。核实变更后移除旧记录，再重新扫描添加。
-      </p>
-    </section>
   </div>
 
   <SshKeyDialog v-model="keyDialog" :ssh-key="editingKey" />
-  <KnownHostDialog v-model="hostDialog" />
 </template>

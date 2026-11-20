@@ -548,10 +548,32 @@ async function sshServer(f, t, authorizedPublicKey) {
   await new Promise((r) => socket.listen(0, '127.0.0.1', r));
   const port = socket.address().port;
   await new Promise((r) => socket.close(r));
+  const sshd = '/usr/sbin/sshd';
+  // OpenSSH 9.8 added per-source penalties. Every deliberate auth failure
+  // and every scan in this fixture comes from the same loopback address.
+  let penalties = ['PerSourcePenalties no'];
+  try {
+    await exec(sshd, [
+      '-G',
+      '-f',
+      '/dev/null',
+      '-o',
+      penalties[0].replace(' ', '='),
+    ]);
+  } catch (error) {
+    if (
+      !/Bad configuration option: PerSourcePenalties|illegal option -- G|unknown option -- G/i.test(
+        error.stderr ?? '',
+      )
+    )
+      throw error;
+    penalties = [];
+  }
   const configPath = join(f.directory, 'sshd_config');
   await writeFile(
     configPath,
     [
+      ...penalties,
       `Port ${port}`,
       'ListenAddress 127.0.0.1',
       `HostKey ${host.path}`,
@@ -568,7 +590,7 @@ async function sshServer(f, t, authorizedPublicKey) {
     { mode: 0o600 },
   );
   let errors = '';
-  const child = spawn('/usr/sbin/sshd', ['-D', '-e', '-f', configPath], {
+  const child = spawn(sshd, ['-D', '-e', '-f', configPath], {
     stdio: ['ignore', 'ignore', 'pipe'],
   });
   child.stderr.on('data', (s) => {
@@ -606,7 +628,7 @@ async function sshServer(f, t, authorizedPublicKey) {
 }
 
 test(
-  'real SSH fetch/build isolates credentials, reports host/key failures and supports independent concurrent keys',
+  'real SSH fetch/build learns new hosts, rejects changed keys and isolates deployment keys',
   { timeout: 90000 },
   async (t) => {
     const f = await fixture(t),
@@ -652,11 +674,6 @@ test(
     ]);
     const repository = `ssh://${userInfo().username}@127.0.0.1:${server.port}${repo}`;
     const parsed = await ssh.publicKey(server.host.publicKey);
-    const hosts = await ok(f, s, 'POST', '/api/known-hosts', {
-      host: '127.0.0.1',
-      port: server.port,
-      keys: [parsed],
-    });
     const project = await ok(f, s, 'POST', '/api/projects', {
       ...projectInput,
       repository,
@@ -664,16 +681,40 @@ test(
       buildScript:
         'test ! -e /run/creds\ntest ! -e "$HOME/.ssh"\ntest -z "${BUILDER_SECRET_KEY-}"\nmkdir -p dist\nenv > dist/environment.txt\ncp marker.txt dist/result.txt\nsleep 2',
     });
-    const fetched = await ok(
+    await writeFile(server.authorized, '', { mode: 0o600 });
+    const unauthenticated = await call(
       f,
       s,
       'POST',
-      `/api/projects/${project.id}/fetch`,
-      { branch: 'main' },
+      `/api/projects/${project.id}/test-fetch`,
+      { branch: 'main', refType: 'branch' },
     );
-    assert.match(fetched.sha, /^[a-f0-9]{40}$/);
+    assert.equal(unauthenticated.statusCode, 400);
+    assert.match(unauthenticated.json().message, /SSH 认证失败/);
+    assert.equal((await ok(f, s, 'GET', '/api/known-hosts')).total, 0);
+    assert.deepEqual(await readdir(ssh.root), []);
+    await writeFile(server.authorized, key.publicKey + '\n', { mode: 0o600 });
+    const probe = await ok(
+      f,
+      s,
+      'POST',
+      `/api/projects/${project.id}/test-fetch`,
+      { branch: 'main', refType: 'branch' },
+    );
+    assert.deepEqual(probe, { ok: true, branches: ['main'], tags: [] });
+    const sha = (
+      await exec('git', ['-C', repo, 'rev-parse', 'HEAD'])
+    ).stdout.trim();
+    const {
+      items: [host],
+      total,
+    } = await ok(f, s, 'GET', '/api/known-hosts');
+    assert.equal(total, 1);
+    assert.equal(host.port, server.port);
+    assert.equal(host.fingerprint, parsed.fingerprint);
     assert.deepEqual(await readdir(ssh.root), []);
     const creds = await ssh.credentials(repository, imported.id);
+    assert.equal(creds.firstConnection, false);
     assert.equal((await stat(creds.directory)).mode & 0o777, 0o700);
     assert.equal((await stat(join(creds.directory, 'id'))).mode & 0o777, 0o600);
     assert.equal(
@@ -690,7 +731,7 @@ test(
       s,
       'POST',
       '/api/jobs',
-      { projectId: project.id, branch: 'main', sha: fetched.sha },
+      { projectId: project.id, branch: 'main', refType: 'branch' },
       { 'idempotency-key': randomUUID() },
     );
     const done = await until(
@@ -701,6 +742,7 @@ test(
       done.items.find((j) => j.id === job.id).snapshot.sshKeyId,
       imported.id,
     );
+    assert.equal(done.items.find((j) => j.id === job.id).sha, sha);
     const jobDir = join(
       f.config.dataDirectory,
       'builds',
@@ -728,18 +770,28 @@ test(
     assert.equal(environment.includes(key.privateKey), false);
     assert.equal(logs.includes(key.privateKey), false);
     assert.equal(logs.includes(key.privateKey.split('\n')[1]), false);
-    // Replacing trust with another key must fail before executing a build.
+    // A concurrent first connection cannot override the recorded key.
     const wrong = await keyFile(f.directory, 'wrong-host');
+    const wrongKey = await ssh.publicKey(wrong.publicKey);
+    await assert.rejects(
+      () =>
+        f.db.request('platform', {
+          action: 'rememberHost',
+          data: { host: '127.0.0.1', port: server.port, key: wrongKey },
+        }),
+      /公钥与已记录的公钥不一致/,
+    );
+    // Legacy administrator pins still take precedence over automatic trust.
     await ok(f, s, 'POST', '/api/known-hosts', {
       host: '127.0.0.1',
       port: server.port,
-      keys: [await ssh.publicKey(wrong.publicKey)],
+      keys: [wrongKey],
     });
     let failed = await call(f, s, 'POST', `/api/projects/${project.id}/fetch`, {
       branch: 'main',
     });
     assert.equal(failed.statusCode, 400);
-    assert.match(failed.json().message, /未受信任或主机公钥已变化/);
+    assert.match(failed.json().message, /公钥与已记录的公钥不一致/);
     assert.deepEqual(await readdir(ssh.root), []);
     await ok(f, s, 'POST', '/api/known-hosts', {
       host: '127.0.0.1',
@@ -787,12 +839,19 @@ test(
       sshKeyId: imported2.id,
       buildScript: 'mkdir -p dist\ncp marker.txt dist/result.txt\nsleep 2',
     });
+    assert.equal(
+      (await call(f, s, 'DELETE', `/api/known-hosts/${host.id}`)).statusCode,
+      204,
+    );
     await Promise.all([
       ok(f, s, 'POST', `/api/projects/${project.id}/fetch`, { branch: 'main' }),
       ok(f, s, 'POST', `/api/projects/${project2.id}/fetch`, {
         branch: 'main',
       }),
     ]);
+    const concurrentHosts = await ok(f, s, 'GET', '/api/known-hosts');
+    assert.equal(concurrentHosts.total, 1);
+    assert.equal(concurrentHosts.items[0].fingerprint, parsed.fingerprint);
     await ok(f, s, 'PUT', '/api/settings', { maxConcurrent: 2 });
     const latest = (await ok(f, s, 'GET', '/api/projects')).items;
     const parallel = [];
@@ -857,15 +916,20 @@ test(
           f,
           await login(f),
           'DELETE',
-          `/api/known-hosts/${hosts[0].id}`,
+          `/api/known-hosts/${concurrentHosts.items[0].id}`,
         )
       ).statusCode,
       204,
     );
-    await assert.rejects(
-      () => new SshService(f.config, f.db).credentials(repository, imported.id),
-      /未受信任/,
+    const relearned = await ok(
+      f,
+      await login(f),
+      'POST',
+      `/api/projects/${project.id}/fetch`,
+      { branch: 'main' },
     );
+    assert.equal(relearned.sha, sha);
+    assert.deepEqual(await readdir(ssh.root), []);
   },
 );
 
@@ -941,15 +1005,59 @@ test(
         assert.ok(
           gitArgs.some(
             (a) =>
-              a.startsWith('GIT_SSH_COMMAND=') && a.includes('/run/creds/id'),
+              a.startsWith('GIT_SSH_COMMAND=') &&
+              a.includes('/run/creds/id') &&
+              a.includes('StrictHostKeyChecking=yes'),
           ),
         );
+        assert.ok(!gitArgs.some((a) => a.includes('/run/builder-known-hosts')));
+        const first = await ssh.credentials(
+          'git@new.example.com:repo.git',
+          generated.id,
+        );
+        try {
+          const firstArgs = JSON.parse(
+            await docker.command(
+              'fixture',
+              dir,
+              ['git', 'ls-remote', 'git@new.example.com:repo.git'],
+              undefined,
+              undefined,
+              'restricted',
+              1000,
+              first,
+            ),
+          );
+          assert.ok(
+            firstArgs.includes(
+              `type=bind,src=${first.directory},dst=/run/creds,readonly`,
+            ),
+          );
+          assert.ok(
+            firstArgs.includes(
+              `type=bind,src=${join(first.directory, 'known_hosts')},dst=/run/builder-known-hosts`,
+            ),
+          );
+          assert.ok(
+            firstArgs.some(
+              (a) =>
+                a.startsWith('GIT_SSH_COMMAND=') &&
+                a.includes('StrictHostKeyChecking=accept-new') &&
+                a.includes("UserKnownHostsFile='/run/builder-known-hosts'"),
+            ),
+          );
+        } finally {
+          await rm(first.directory, { recursive: true, force: true });
+        }
         const buildArgs = JSON.parse(
           await docker.command('fixture', dir, ['bash', '-c', 'true']),
         );
         assert.equal(
           buildArgs.some(
-            (a) => a.includes('/run/creds') || a.includes(creds.directory),
+            (a) =>
+              a.includes('/run/creds') ||
+              a.includes('/run/builder-known-hosts') ||
+              a.includes(creds.directory),
           ),
           false,
         );

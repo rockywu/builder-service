@@ -1,6 +1,6 @@
 # Git SSH 密钥：接口契约与执行要求
 
-前端已按本契约完成（`SettingsPage.vue`、`SshKeyDialog.vue`、`KnownHostDialog.vue`、`ProjectDrawer.vue`、`BuildDialog.vue`，数据层见 `apps/web/src/api/store.ts` 与 `types.ts`）。后端实现必须与此一致，不得为适配后端修改已完成的 UI（见 `AGENTS.md`）。
+前端已按本契约完成（`SettingsPage.vue`、`SshKeyDialog.vue`、`ProjectDrawer.vue`、`BuildDialog.vue`，数据层见 `apps/web/src/api/store.ts` 与 `types.ts`）。后端实现必须与此一致，不得为适配后端修改已完成的 UI（见 `AGENTS.md`）。
 
 开发交接（现状、缺口清单、任务拆分、验收）见 `docs/ssh-key-handoff.md`。
 
@@ -57,6 +57,8 @@ interface ScannedHostKey {
 | `POST /known-hosts`       | `{ host, port, keys: ScannedHostKey[] }`                               | `KnownHost[]`                 | 服务端重新计算每条 `publicKey` 的指纹并与提交的 `fingerprint` 比对，不一致拒绝；同 host+port+keyType 已存在则覆盖。                                                         |
 | `DELETE /known-hosts/:id` | —                                                                      | 204                           |                                                                                                                                                                             |
 
+主机管理接口为旧客户端兼容和管理员维护保留。主机公钥轮换时，须从可信渠道核实新公钥，再更新记录。
+
 项目接口：`POST/PUT /projects` 接收 `sshKeyId: number | null`。
 
 - 仓库为 `git@` / `ssh://` 且 `sshKeyId` 为空 → 400「SSH 地址需要选择密钥」。
@@ -72,16 +74,16 @@ interface ScannedHostKey {
 
 远端 Git 步骤使用项目绑定的密钥；其他命令继续使用禁用默认身份文件的环境：
 
-1. 涉及远端的 git 步骤（`fetch()` 中的 `ls-remote` 与 `fetch`，`execute()` 中的 `fetch`）在**任务源码目录之外**创建 `0700` 临时目录，写入解密私钥（`0600`）和由 `known_hosts` 表生成的文件（`[host]:port` 格式）。
-2. `GIT_SSH_COMMAND=ssh -F /dev/null -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -i <dir>/id -o UserKnownHostsFile=<dir>/known_hosts -o StrictHostKeyChecking=yes`，经参数数组/环境变量传入，不拼接 shell。
-3. Docker 模式：仅 git 步骤以只读方式挂载该目录（如 `/run/creds`）；`bash build.sh` 步骤不挂载，构建脚本无法读取私钥。
-4. 步骤结束（成功、失败、取消）立即删除临时目录；服务启动时清理遗留的凭据临时目录。
-5. 入队快照记录 `sshKeyId`；拉取代码（`/projects/:id/fetch`）与执行使用同一密钥。执行时密钥已删除 → 任务失败「拉取凭据已删除」，不回退为无凭据拉取。
-6. 成功使用后更新 `lastUsedAt`。日志不输出私钥路径以外的凭据内容；主机校验失败给出明确错误「主机 X 未受信任或主机公钥已变化」。
+1. 远端 Git 步骤在**任务源码目录之外**创建 `0700` 临时目录，写入解密私钥和临时 `known_hosts`（文件均为 `0600`）。Git 不使用默认密钥、SSH agent 或主机公钥文件。
+2. 已记录的主机和端口使用 `StrictHostKeyChecking=yes`。首次连接使用 `accept-new`，远端 Git 操作成功后才将该公钥写入数据库。并发首次连接可以确认同一公钥，不能覆盖已记录的公钥。首次连接未通过独立渠道核实公钥。
+3. Docker 仅向远端 Git 步骤只读挂载凭据目录。首次连接时，仅将临时 `known_hosts` 文件另行以可写方式挂载；构建脚本容器不获得这些文件。
+4. 步骤结束（成功、失败、取消或超时）后删除临时目录；服务启动时清理遗留的凭据临时目录。
+5. 入队快照记录 `sshKeyId`；测试拉取（`/projects/:id/test-fetch`）使用当前项目的密钥，正式任务使用入队时的密钥。测试拉取不固定提交；旧版 `/projects/:id/fetch` 继续供固定 SHA 的客户端使用。密钥已删除时不回退为无凭据拉取。
+6. 成功使用后更新 `lastUsedAt`。主机公钥不匹配时拒绝连接，并提示联系管理员核实。
 
 ## 6. 验收
 
-- 生成密钥 → 公钥添加为只读 Deploy Key → 信任主机 → 项目选择密钥 → 拉取代码 → 入队 → 构建成功。
-- 未信任主机、主机公钥变化、密钥被删除、Deploy Key 被撤销时均明确失败。
+- 生成密钥 → 公钥添加为只读 Deploy Key → 项目选择密钥 → 选择分支或标签 → 入队 → 自动拉取并构建成功；可在入队前测试拉取。
+- 首次成功拉取自动记录主机公钥；主机公钥变化、密钥被删除、Deploy Key 被撤销时均明确失败。
 - 构建脚本中 `ls /run/creds`、`env`、`cat ~/.ssh/*` 均拿不到私钥；接口响应、日志、审计中搜索不到私钥内容。
 - 不同项目使用不同密钥并行构建互不影响。
