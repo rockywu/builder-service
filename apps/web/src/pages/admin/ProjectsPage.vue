@@ -32,11 +32,8 @@ const jobOpen = ref(false);
 const activeProject = ref<Project | null>(null);
 const activeJobId = ref<number | null>(null);
 const deleteTarget = ref<Project | null>(null);
-const deleteAnchor = ref<HTMLElement>();
+const deleteAnchor = ref<{ getBoundingClientRect: () => DOMRect }>();
 const deletingId = ref<number | null>(null);
-function rememberMenuAnchor(event: MouseEvent) {
-  deleteAnchor.value = event.currentTarget as HTMLElement;
-}
 async function confirmProjectDelete() {
   const project = deleteTarget.value;
   if (!project || deletingId.value !== null) return;
@@ -101,7 +98,17 @@ function onCreated(job: Job) {
   openJob(job);
 }
 function onCommand(command: string, project: Project) {
-  if (command === 'delete' && isAdmin.value) deleteTarget.value = project;
+  if (command === 'delete' && isAdmin.value) {
+    const button = document.querySelector(
+      `[data-project-menu="${project.id}"]`,
+    );
+    if (!button) return;
+    // Position for mouse and keyboard without taking over the dropdown's events or ARIA.
+    deleteAnchor.value = {
+      getBoundingClientRect: () => button.getBoundingClientRect(),
+    };
+    deleteTarget.value = project;
+  }
   if (command === 'config') openConfig(project);
   if (command === 'builds')
     void router.push({ path: '/admin/builds', query: { project: project.id } });
@@ -159,7 +166,7 @@ function onCommand(command: string, project: Project) {
             circle
             :icon="MoreFilled"
             aria-label="更多操作"
-            @click="rememberMenuAnchor"
+            :data-project-menu="project.id"
           />
           <template #dropdown>
             <el-dropdown-menu>

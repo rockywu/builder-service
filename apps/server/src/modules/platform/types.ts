@@ -49,6 +49,7 @@ export type ProjectInput = Pick<
 
 export type JobStatus =
   'queued' | 'running' | 'canceling' | 'succeeded' | 'failed' | 'canceled';
+export type GitRefType = 'branch' | 'tag';
 
 export interface LogLine {
   step: number;
@@ -63,7 +64,11 @@ export interface Job {
   /** 项目内构建编号 */
   number: number;
   projectId: number;
+  /** Repository at enqueue time; older job payloads may omit it. */
+  repository?: string;
   branch: string;
+  /** Set on tasks that resolve the chosen remote ref when they start. */
+  refType?: GitRefType;
   sha: string;
   message: string;
   status: JobStatus;

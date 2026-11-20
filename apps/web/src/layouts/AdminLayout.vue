@@ -4,6 +4,7 @@ import { useRouter } from 'vue-router';
 import { ArrowDown, Download, SwitchButton } from '@element-plus/icons-vue';
 import { OCCUPYING, db } from '../api/store';
 import { currentUser, isAdmin, logout } from '../auth';
+import RetentionReminder from '../components/RetentionReminder.vue';
 import AppLogo from '../components/AppLogo.vue';
 
 const router = useRouter();
@@ -146,6 +147,11 @@ async function signOut() {
 
     <main class="mx-auto max-w-7xl px-4 py-6 sm:px-6 sm:py-8">
       <RouterView />
+      <RetentionReminder
+        v-if="isAdmin && currentUser"
+        :key="currentUser.id"
+        :user-id="currentUser.id"
+      />
     </main>
   </div>
 </template>

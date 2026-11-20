@@ -1,3 +1,4 @@
+import { cleanupPlans } from './retention.js';
 import type Database from 'better-sqlite3';
 import type {
   User,
@@ -542,6 +543,12 @@ export function createPlatformStore(db: Database.Database) {
         if (d.id) {
           const p = project(Number(d.id));
           requireValue(!p.deleting, '项目正在删除，不能修改配置。', 409);
+          if (Object.hasOwn(d, 'previousIcon'))
+            requireValue(
+              (p.icon ?? null) === d.previousIcon,
+              '项目图标已变更，请刷新后重试。',
+              409,
+            );
           const next = {
             ...p,
             ...input,
@@ -795,6 +802,34 @@ export function createPlatformStore(db: Database.Database) {
         }
         saveJob(j);
         return true;
+      }
+      case 'retentionPlans':
+        admin();
+        return cleanupPlans(db);
+      case 'markRetentionCleanup': {
+        admin();
+        const [plan] = cleanupPlans(db, Number(d.id));
+        requireValue(
+          plan && plan.token === d.token,
+          '清理方案已变化，请重新核对。',
+          409,
+        );
+        const markJob = db.prepare(
+          'UPDATE build_jobs SET deleting=1 WHERE id=? AND project_id=? AND deleting=0',
+        );
+        const markRelease = db.prepare(
+          'UPDATE releases SET deleting=1 WHERE job_id=? AND project_id=?',
+        );
+        for (const item of plan.candidates) {
+          requireValue(
+            markJob.run(item.jobId, plan.projectId).changes === 1,
+            '清理方案已变化。',
+            409,
+          );
+          markRelease.run(item.jobId, plan.projectId);
+        }
+        audit(actor!, 'project.retention.cleanup', plan.projectId);
+        return plan.candidates.map((item) => item.jobId);
       }
       case 'markDelete': {
         const r = jobRow(Number(d.id));

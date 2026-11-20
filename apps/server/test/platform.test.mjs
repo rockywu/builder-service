@@ -8,6 +8,8 @@ import {
   rm,
   stat,
   access,
+  readdir,
+  rename,
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -22,6 +24,10 @@ import sharp from 'sharp';
 import { utimes } from 'node:fs/promises';
 import { runProcess } from '../dist/tools/process.js';
 import { collectArtifacts, safePath } from '../dist/tools/paths.js';
+import {
+  buildDirectoryName,
+  resolveBuildDirectory,
+} from '../dist/tools/build-directory.js';
 const exec = promisify(execFile),
   origin = 'http://127.0.0.1:5173';
 process.umask(0o077);
@@ -102,6 +108,13 @@ async function ok(f, s, method, url, payload, headers) {
   const r = await call(f, s, method, url, payload, headers);
   assert.equal(r.statusCode, 200, `${method} ${url}: ${r.body}`);
   return r.json();
+}
+function jobDirectory(f, id) {
+  return f.db
+    .request('platform', { action: 'job', data: { id } })
+    .then((job) =>
+      resolveBuildDirectory(join(f.config.dataDirectory, 'builds'), job),
+    );
 }
 const input = {
   name: 'Fixture',
@@ -371,15 +384,19 @@ test(
     assert.equal(page.total, 1);
     assert.equal(page.items[0].testStatus, 'passed');
     const fileId = rel.artifacts[0].id;
+    const releasedDirectory = await jobDirectory(f, rel.jobId);
+    assert.ok(
+      (await readdir(join(f.config.dataDirectory, 'builds'))).includes(
+        `repo--main--${fetched.sha.slice(0, 8)}--job-${rel.jobId}`,
+      ),
+    );
     await ok(f, s, 'DELETE', `/api/releases/${rel.id}`);
     assert.equal(
       (await call(f, null, 'GET', `/api/public/artifacts/${fileId}/download`))
         .statusCode,
       404,
     );
-    await assert.rejects(
-      access(join(f.config.dataDirectory, 'builds', String(rel.jobId))),
-    );
+    await assert.rejects(access(releasedDirectory));
     assert.equal(
       (await ok(f, s, 'GET', '/api/jobs')).items.some(
         (j) => j.id === rel.jobId,
@@ -398,14 +415,19 @@ test(
     assert.ok(logs.lines.some((l) => l.text.includes('node -e')));
     assert.equal(logs.done, true);
     const backup = await ok(f, again, 'POST', '/api/maintenance/backup');
+    const backupRoot = join(f.config.dataDirectory, 'backups', backup.id);
+    // Restore must also understand older backups with numeric build directories.
+    const backupJob = (await ok(f, again, 'GET', '/api/jobs')).items.find(
+      (j) => j.id === ordered[1].id,
+    );
+    await rename(
+      join(backupRoot, 'builds', buildDirectoryName(backupJob)),
+      join(backupRoot, 'builds', String(backupJob.id)),
+    );
     const restored = join(f.directory, 'restored');
     await exec(
       process.execPath,
-      [
-        'dist/tools/restore.js',
-        join(f.config.dataDirectory, 'backups', backup.id),
-        restored,
-      ],
+      ['dist/tools/restore.js', backupRoot, restored],
       { cwd: new URL('..', import.meta.url).pathname },
     );
     const restoredDb = await startDatabase(restored);
@@ -416,11 +438,12 @@ test(
       });
       assert.equal(state.releases.length, 5);
       const a = state.releases[0].artifacts[0];
+      const restoredJob = state.jobs.find(
+        (j) => j.id === state.releases[0].jobId,
+      );
       const content = await readFile(
         join(
-          restored,
-          'builds',
-          String(state.releases[0].jobId),
+          await resolveBuildDirectory(join(restored, 'builds'), restoredJob),
           'artifacts',
           '0',
         ),
@@ -435,13 +458,7 @@ test(
     // A damaged published artifact must disappear from anonymous listings after restart.
     const published = (await ok(f, again, 'GET', '/api/releases')).items[0];
     await writeFile(
-      join(
-        f.config.dataDirectory,
-        'builds',
-        String(published.jobId),
-        'artifacts',
-        '0',
-      ),
+      join(await jobDirectory(f, published.jobId), 'artifacts', '0'),
       'tampered',
     );
     await f.restart();
@@ -573,6 +590,7 @@ test(
       (j) => j.status === 'canceled',
     );
     assert.equal((await ok(f, s, 'GET', '/api/queue')).occupied, 0);
+    const canceledDirectory = await jobDirectory(f, job.id);
     await ok(f, s, 'DELETE', `/api/jobs/${job.id}`);
     assert.equal(
       (await call(f, s, 'POST', '/api/jobs', body, { 'idempotency-key': key }))
@@ -580,9 +598,7 @@ test(
       409,
     );
 
-    await assert.rejects(
-      access(join(f.config.dataDirectory, 'builds', String(job.id))),
-    );
+    await assert.rejects(access(canceledDirectory));
     const failed = await setupProject(f, s, git, {
       name: 'Failed',
       buildScript: 'mkdir -p dist\necho before\nfalse\necho after > dist/out',
@@ -751,7 +767,11 @@ test(
       'icons',
       retainedIcon.icon.split('/').at(-1),
     );
-    await utimes(oldIconFile, old, old);
+    await assert.rejects(access(oldIconFile), { code: 'ENOENT' });
+    // A previously interrupted upload can still leave an unreferenced icon.
+    const orphanIcon = join(f.config.dataDirectory, 'icons', `${randomUUID()}.png`);
+    await writeFile(orphanIcon, await readFile(referencedFile), { mode: 0o600 });
+    await utimes(orphanIcon, old, old);
     await utimes(referencedFile, old, old);
     // Pause the live scheduler by closing the HTTP app, then seed interrupted DB state.
     await f.app.close();
@@ -835,7 +855,13 @@ test(
       (await ok(f, again, 'GET', `/api/jobs/${job.id}`)).status,
       'succeeded',
     );
-    await assert.rejects(access(oldIconFile));
+    assert.equal(
+      (await readdir(join(f.config.dataDirectory, 'builds'))).filter((name) =>
+        /^\d+$/.test(name),
+      ).length,
+      0,
+    );
+    await assert.rejects(access(orphanIcon), { code: 'ENOENT' });
     await access(referencedFile);
     const page1 = await ok(
       f,
@@ -862,6 +888,7 @@ test(
     assert.equal(empty.total, 0);
     assert.equal(empty.hasAny, true);
     const rel = (await ok(f, again, 'GET', '/api/releases')).items[0];
+    const migratedDirectory = await jobDirectory(f, rel.jobId);
     assert.equal(
       (
         await call(
@@ -899,11 +926,10 @@ test(
       held.stream.destroy();
     });
     await guard.delete(rel.jobId, again.user);
-    await assert.rejects(
-      access(join(f.config.dataDirectory, 'builds', String(rel.jobId))),
-    );
+    await assert.rejects(access(migratedDirectory));
     // Restart continues a partially marked cleanup without reviving its release.
     const remaining = (await ok(f, again, 'GET', '/api/releases')).items[0];
+    const remainingDirectory = await jobDirectory(f, remaining.jobId);
     await f.db.request('platform', {
       action: 'markDelete',
       actor: again.user,
@@ -916,9 +942,7 @@ test(
         .statusCode,
       404,
     );
-    await assert.rejects(
-      access(join(f.config.dataDirectory, 'builds', String(remaining.jobId))),
-    );
+    await assert.rejects(access(remainingDirectory));
   },
 );
 

@@ -68,6 +68,8 @@ export function clearAdmin() {
   generation++;
   controller?.abort();
   logs.clear();
+  watched.clear();
+  enqueueKeys.clear();
   db.projects = [];
   db.jobs = [];
   db.releases = [];
@@ -90,6 +92,23 @@ async function performRefresh() {
     role === 'admin' ? all<User>('/users', signal) : Promise.resolve([]),
   ]);
   if (epoch !== generation) return;
+  const liveJobs = new Set(jobs.map((j) => j.id));
+  for (const id of logs.keys()) if (!liveJobs.has(id)) logs.delete(id);
+  for (const id of watched) if (!liveJobs.has(id)) watched.delete(id);
+  const liveProjects = new Set(projects.map((p) => p.id));
+  for (const [signature, pending] of enqueueKeys)
+    if (!liveProjects.has(pending.projectId)) enqueueKeys.delete(signature);
+  const slugs = new Set(projects.map((p) => p.slug));
+  try {
+    // Another session may have deleted the project while this browser was offline.
+    for (let i = localStorage.length - 1; i >= 0; i--) {
+      const key = localStorage.key(i);
+      const slug = key?.match(/^builder:build-branch:\d+:([^:]+)$/)?.[1];
+      if (key && slug && !slugs.has(slug)) localStorage.removeItem(key);
+    }
+  } catch {
+    // Optional storage can be disabled by the browser.
+  }
   for (const j of jobs) {
     const cached = logs.get(j.id);
     j.script = cached?.lines ?? [];
@@ -171,7 +190,7 @@ export async function fetchCode(projectId: number, branch: string) {
   if (p) p.fetched = result;
   return result;
 }
-const enqueueKeys = new Map<string, string>();
+const enqueueKeys = new Map<string, { projectId: number; key: string }>();
 export async function enqueueBuild(
   projectId: number,
   branch: string,
@@ -181,12 +200,16 @@ export async function enqueueBuild(
 ) {
   const input = { projectId, branch, sha },
     signature = JSON.stringify(input);
-  const key = enqueueKeys.get(signature) ?? crypto.randomUUID();
-  enqueueKeys.set(signature, key);
+  const key = enqueueKeys.get(signature)?.key ?? crypto.randomUUID();
+  enqueueKeys.set(signature, { projectId, key });
   try {
     const job = await mutation<Job>('/jobs', 'POST', input, key);
     enqueueKeys.delete(signature);
-    if (!db.jobs.some((j) => j.id === job.id)) db.jobs.push(job);
+    if (
+      db.projects.some((p) => p.id === projectId) &&
+      !db.jobs.some((j) => j.id === job.id)
+    )
+      db.jobs.push(job);
     return db.jobs.find((j) => j.id === job.id) ?? job;
   } catch (e) {
     if (e instanceof ApiError && e.status >= 400 && e.status < 500)
@@ -325,6 +348,7 @@ export async function loadPublicProjects() {
   const items = await request<PublicProject[]>('/public/projects');
   // View-only defaults keep the established avatar component API; internal fields are never sent by the public API.
   publicDb.projects = items.map((p) => ({ ...p, color: '#2563eb' }));
+  for (const id of Object.keys(publicCounts)) delete publicCounts[Number(id)];
   for (const p of items) publicCounts[p.id] = p.releaseCount;
   publicDb.releases = items.flatMap((p) =>
     p.latestRelease ? [p.latestRelease] : [],
@@ -368,7 +392,7 @@ async function pollLogs() {
         nextOffset: number;
         done: boolean;
       }>(`/jobs/${id}/log?offset=${cached.offset}`);
-      if (!watched.has(id)) continue;
+      if (!watched.has(id) || !db.jobs.some((j) => j.id === id)) continue;
       cached.lines.push(...chunk.lines);
       cached.offset = chunk.nextOffset;
       cached.done = chunk.done && chunk.lines.length < 500;

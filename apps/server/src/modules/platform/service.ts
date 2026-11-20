@@ -17,6 +17,8 @@ import type { AppConfig } from '../../config.js';
 import type { Command } from './store.js';
 import type { Job, Release, User, Project } from './types.js';
 import { BuildRunner } from '../../tools/runner.js';
+import { migrateBuildDirectory } from '../../tools/build-directory.js';
+import { safePath, syncDirectory } from '../../tools/paths.js';
 import { SshService } from '../../tools/ssh.js';
 import { runProcess, ExecutionUnconfirmedError } from '../../tools/process.js';
 import { requireValue, PlatformError } from './errors.js';
@@ -117,7 +119,8 @@ export class PlatformService {
     void this.pump();
   }
   async recover() {
-    for (const j of await this.command<Job[]>('jobs'))
+    const jobs = await this.command<Job[]>('jobs');
+    for (const j of jobs)
       if (['running', 'canceling'].includes(j.status)) {
         const files = await this.runner.recover(j);
         await this.command('finish', {
@@ -127,6 +130,7 @@ export class PlatformService {
           artifacts: files,
         });
       }
+    for (const j of jobs) await migrateBuildDirectory(this.runner.root, j);
     // Verify successful versions as well as interrupted commits before exposing downloads.
     const releases = await this.command<Release[]>('releases');
     for (const release of releases) {
@@ -270,7 +274,8 @@ export class PlatformService {
         '文件正在下载，请稍后重试删除。',
         409,
       );
-      await this.runner.remove(id);
+      const job = await this.command<Job>('job', { id });
+      await this.runner.remove(job);
       await this.command('completeDelete', { id });
     })();
     this.deleting.set(id, task);
@@ -278,6 +283,24 @@ export class PlatformService {
       await task;
     } finally {
       this.deleting.delete(id);
+    }
+  }
+  async removeUnusedIcon(icon?: string, duringDeletion = false) {
+    const key = icon?.match(
+      /^\/api\/public\/icons\/([a-f0-9-]{36}\.png)$/,
+    )?.[1];
+    if (!key) return;
+    const projects = await this.command<Project[]>('projects');
+    if (
+      projects.some((p) => p.icon === icon && (!duringDeletion || !p.deleting))
+    )
+      return;
+    try {
+      const dir = await safePath(this.config.dataDirectory, 'icons');
+      await rm(join(dir, key), { force: true });
+      await syncDirectory(dir);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
     }
   }
   async deleteProject(id: number, actor?: Command['actor']) {
@@ -289,27 +312,13 @@ export class PlatformService {
       const project = await this.command<Project>('project', { id });
       requireValue(project.deleting, '项目不在清理流程。', 409);
       try {
+        await this.runner.cleanupTransient(id);
         for (const jobId of await this.command<number[]>(
           'projectDeletionJobs',
           { id },
         ))
           await this.delete(jobId);
-        if (
-          project.icon &&
-          /^\/api\/public\/icons\/[a-f0-9-]{36}\.png$/.test(project.icon)
-        ) {
-          const projects = await this.command<Project[]>('projects');
-          if (!projects.some((p) => p.id !== id && p.icon === project.icon)) {
-            await rm(
-              join(
-                this.config.dataDirectory,
-                'icons',
-                project.icon.split('/').at(-1)!,
-              ),
-              { force: true },
-            );
-          }
-        }
+        await this.removeUnusedIcon(project.icon, true);
         await this.command('completeProjectDelete', { id });
       } catch (error) {
         await this.command('projectDeleteFailed', { id });
@@ -351,7 +360,8 @@ export class PlatformService {
     try {
       // Recheck visibility after registering the reader; a cleanup marker may have raced the initial lookup.
       await this.command('artifact', { id });
-      const path = await this.runner.artifact(jobId, f.storage_key);
+      const job = await this.command<Job>('job', { id: jobId });
+      const path = await this.runner.artifact(job, f.storage_key);
       const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
       try {
         const stat = await file.stat();

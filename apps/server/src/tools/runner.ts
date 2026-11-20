@@ -19,6 +19,10 @@ import {
   ProcessExitError,
 } from './process.js';
 import { safePath, collectArtifacts, syncDirectory } from './paths.js';
+import {
+  buildDirectoryExists,
+  resolveBuildDirectory,
+} from './build-directory.js';
 import type { AppConfig } from '../config.js';
 import type { Job, Project, LogLine } from '../modules/platform/types.js';
 import { requireValue, PlatformError } from '../modules/platform/errors.js';
@@ -43,12 +47,12 @@ export class BuildRunner {
   name(id: number | string) {
     return `builder-${createHash('sha256').update(resolve(this.root)).digest('hex').slice(0, 12)}-${id}`;
   }
-  directory(id: number) {
-    requireValue(Number.isSafeInteger(id) && id > 0, '无效任务编号。');
-    return join(this.root, String(id));
+  directory(job: Job) {
+    return resolveBuildDirectory(this.root, job);
   }
   async initialize() {
     await mkdir(this.root, { recursive: true, mode: 0o700 });
+    await buildDirectoryExists(this.root);
     await chmod(this.root, 0o700);
     await syncDirectory(this.config.dataDirectory);
     if (this.mode === 'docker') {
@@ -250,7 +254,7 @@ export class BuildRunner {
   }
   async fetch(project: Project, branch: string) {
     await this.initialize();
-    const id = `fetch-${crypto.randomUUID()}`;
+    const id = `fetch-${project.id}-${crypto.randomUUID()}`;
     const dir = join(this.root, id);
     await mkdir(dir, { mode: 0o700 });
     let confirmed = true;
@@ -335,10 +339,13 @@ export class BuildRunner {
       if (confirmed) await rm(dir, { recursive: true, force: true });
     }
   }
-  async log(id: number, offset: number) {
+  async log(job: Job, offset: number) {
     let text = '';
     try {
-      text = await readFile(join(this.directory(id), 'build.log'), 'utf8');
+      text = await readFile(
+        join(await this.directory(job), 'build.log'),
+        'utf8',
+      );
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e;
     }
@@ -353,11 +360,11 @@ export class BuildRunner {
     };
   }
   async execute(
-    job: Job & { repository?: string },
+    job: Job,
     signal: AbortSignal,
     phase: (n: 0 | 1 | 2) => Promise<void>,
   ) {
-    const dir = this.directory(job.id);
+    const dir = await this.directory(job);
     await mkdir(dir, { mode: 0o700 });
     await syncDirectory(this.root);
     const log = await open(join(dir, 'build.log'), 'a', 0o600);
@@ -555,9 +562,16 @@ export class BuildRunner {
         throw e;
     }
   }
-  async cleanupTransient() {
+  async cleanupTransient(projectId?: number) {
+    if (!(await buildDirectoryExists(this.root))) return;
     for (const name of await readdir(this.root)) {
-      if (!/^(fetch|scan)-[a-f0-9-]{36}$/.test(name)) continue;
+      const match =
+        /^(?:fetch(?:-([1-9]\d*))?|scan)-[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.exec(
+          name,
+        );
+      if (!match || (projectId !== undefined && match[1] !== String(projectId)))
+        continue;
+      if (!(await buildDirectoryExists(join(this.root, name)))) continue;
       if (this.mode === 'local') await this.stopLocal(join(this.root, name));
       else {
         const ids = (
@@ -571,9 +585,11 @@ export class BuildRunner {
         if (ids) await runProcess('docker', ['rm', '--force', this.name(name)]);
       }
       await rm(join(this.root, name), { recursive: true, force: true });
+      await syncDirectory(this.root);
     }
   }
   async recover(job: Job) {
+    const directory = await this.directory(job);
     if (this.mode === 'docker') {
       const name = this.name(job.id);
       const ids = (
@@ -581,14 +597,14 @@ export class BuildRunner {
       ).trim();
       if (ids) await runProcess('docker', ['rm', '--force', name]);
     } else {
-      await this.stopLocal(this.directory(job.id));
+      await this.stopLocal(directory);
     }
     try {
       const files = JSON.parse(
-        await readFile(join(this.directory(job.id), 'manifest.json'), 'utf8'),
+        await readFile(join(directory, 'manifest.json'), 'utf8'),
       ) as { name: string; size: number; sha256: string; storageKey: string }[];
       for (const f of files) {
-        const path = await safePath(this.directory(job.id), f.storageKey);
+        const path = await safePath(directory, f.storageKey);
         const hash = createHash('sha256');
         const file = await open(path, 'r');
         let size = 0;
@@ -613,10 +629,11 @@ export class BuildRunner {
       throw e;
     }
   }
-  async remove(id: number) {
-    await rm(this.directory(id), { recursive: true, force: true });
+  async remove(job: Job) {
+    await rm(await this.directory(job), { recursive: true, force: true });
+    await syncDirectory(this.root);
   }
-  async artifact(id: number, key: string) {
-    return safePath(this.directory(id), key);
+  async artifact(job: Job, key: string) {
+    return safePath(await this.directory(job), key);
   }
 }

@@ -360,9 +360,6 @@ export async function registerPlatform(
     const previous = projectId
       ? await service.command<Project>('project', { id: projectId })
       : undefined;
-    const image = Object.hasOwn(body, 'icon')
-      ? await icon(body.icon, previous?.icon)
-      : previous?.icon;
     const input: ProjectInput = {
       name: text(body.name, '项目名称', 1, 40).trim(),
       description: text(body.description ?? '', '描述', 0, 120),
@@ -376,13 +373,31 @@ export async function registerPlatform(
       buildScript: script,
       artifactPath: body.artifactPath,
       timeout: integer(body.timeout, 5, 180, '超时'),
-      icon: image,
     };
-    return service.command(
-      'saveProject',
-      { input, ...(projectId ? { id: projectId } : {}) },
-      actor(r),
-    );
+    input.icon = Object.hasOwn(body, 'icon')
+      ? await icon(body.icon, previous?.icon)
+      : previous?.icon;
+    let saved = false;
+    try {
+      const result = await service.command(
+        'saveProject',
+        {
+          input,
+          ...(projectId
+            ? { id: projectId, previousIcon: previous?.icon ?? null }
+            : {}),
+        },
+        actor(r),
+      );
+      saved = true;
+      return result;
+    } finally {
+      if (input.icon !== previous?.icon) {
+        await service
+          .removeUnusedIcon(saved ? previous?.icon : input.icon)
+          .catch(() => app.log.warn('未引用图标清理未完成，保留到启动恢复。'));
+      }
+    }
   }
   app.post('/api/projects', { bodyLimit: 3 * 1024 * 1024 }, (r) =>
     saveProject(r),
@@ -461,7 +476,7 @@ export async function registerPlatform(
       '日志位置',
     );
     return {
-      ...(await service.runner.log(job.id, offset)),
+      ...(await service.runner.log(job, offset)),
       done: !['queued', 'running', 'canceling'].includes(job.status),
     };
   });
@@ -481,6 +496,32 @@ export async function registerPlatform(
     };
   });
   app.post('/api/jobs/:id/stop', (r) => service.stop(id(r), actor(r)));
+  app.get('/api/maintenance/retention', (r) => {
+    admin(r);
+    return service.command('retentionPlans', {}, actor(r));
+  });
+  app.post('/api/projects/:id/retention-cleanup', async (r) => {
+    admin(r);
+    const token = object(r.body).token;
+    requireValue(
+      typeof token === 'string' && /^[a-f0-9]{64}$/.test(token),
+      '无效的清理方案。',
+    );
+    const ids = await service.command<number[]>(
+      'markRetentionCleanup',
+      { id: id(r), token },
+      actor(r),
+    );
+    const unfinished: number[] = [];
+    for (const jobId of ids) {
+      try {
+        await service.delete(jobId);
+      } catch {
+        unfinished.push(jobId);
+      }
+    }
+    return { removed: ids.length - unfinished.length, unfinished };
+  });
   app.delete('/api/jobs/:id', async (r) => {
     await service.delete(id(r), actor(r));
     return { ok: true };

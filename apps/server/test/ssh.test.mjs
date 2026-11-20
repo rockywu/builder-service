@@ -21,6 +21,7 @@ import { createApp } from '../dist/app.js';
 import { startDatabase, closeDatabase } from '../dist/db/client.js';
 import { SshService, isPublicAddress, sshHostOf } from '../dist/tools/ssh.js';
 import { BuildRunner } from '../dist/tools/runner.js';
+import { buildDirectoryName } from '../dist/tools/build-directory.js';
 import { runProcess } from '../dist/tools/process.js';
 const exec = promisify(execFile),
   origin = 'http://127.0.0.1:5173';
@@ -697,29 +698,23 @@ test(
       done.items.find((j) => j.id === job.id).snapshot.sshKeyId,
       imported.id,
     );
+    const jobDir = join(
+      f.config.dataDirectory,
+      'builds',
+      buildDirectoryName(job),
+    );
     const manifest = JSON.parse(
-      await readFile(
-        join(f.config.dataDirectory, 'builds', String(job.id), 'manifest.json'),
-        'utf8',
-      ),
+      await readFile(join(jobDir, 'manifest.json'), 'utf8'),
     );
     const artifactPath = (name) =>
-      join(
-        f.config.dataDirectory,
-        'builds',
-        String(job.id),
-        manifest.find((f) => f.name === name).storageKey,
-      );
+      join(jobDir, manifest.find((f) => f.name === name).storageKey);
     assert.equal(
       await readFile(artifactPath('result.txt'), 'utf8'),
       'ssh-value',
     );
     assert.ok((await ok(f, s, 'GET', '/api/ssh-keys')).items[0].lastUsedAt > 0);
     assert.deepEqual(await readdir(ssh.root), []);
-    const logs = await readFile(
-      join(f.config.dataDirectory, 'builds', String(job.id), 'build.log'),
-      'utf8',
-    );
+    const logs = await readFile(join(jobDir, 'build.log'), 'utf8');
     assert.equal(logs.includes('PRIVATE KEY'), false);
     const environment = await readFile(artifactPath('environment.txt'), 'utf8');
     assert.equal(environment.includes('BUILDER_SECRET_KEY='), false);
@@ -828,7 +823,7 @@ test(
       const dir = join(
         f.config.dataDirectory,
         'builds',
-        String(parallel[i].id),
+        buildDirectoryName(parallel[i]),
       );
       const manifest = JSON.parse(
         await readFile(join(dir, 'manifest.json'), 'utf8'),
