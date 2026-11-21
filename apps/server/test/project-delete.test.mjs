@@ -545,10 +545,10 @@ test(
     assert.deepEqual(await preview(), []);
     const oldest = await completed(f, admin, p);
     const middle = await completed(f, admin, p);
-    for (let n = 0; n < 8; n++) await completed(f, admin, p);
+    for (let n = 0; n < 10; n++) await completed(f, admin, p);
     let [plan] = await preview();
-    assert.equal(plan.limit, 10);
-    assert.equal(plan.kept.length, 10);
+    assert.equal(plan.limit, 12);
+    assert.equal(plan.kept.length, 12);
     assert.deepEqual(
       plan.candidates.map((c) => c.jobId),
       [first.id],
@@ -595,9 +595,17 @@ test(
       (await submit(p, plan.token, admin, { 'x-csrf-token': '' })).statusCode,
       403,
     );
-    assert.equal(counts(f, p.id).jobs, 13);
+    assert.equal(counts(f, p.id).jobs, 15);
     const extra = await completed(f, admin, p);
     const protectedFailure = await failed();
+    const failureDir = join(
+      f.config.dataDirectory,
+      'builds',
+      buildDirectoryName(protectedFailure),
+    );
+    await mkdir(failureDir, { recursive: true, mode: 0o700 });
+    const failureLog = join(failureDir, 'build.log');
+    await writeFile(failureLog, 'build command failed\n', { mode: 0o600 });
     [plan] = await preview();
     assert.deepEqual(
       plan.candidates.map((c) => c.jobId),
@@ -608,7 +616,8 @@ test(
     assert.deepEqual(res.json(), { removed: 4, unfinished: [] });
     assert.equal((await submit(p, plan.token)).statusCode, 409);
     assert.deepEqual(await preview(), []);
-    assert.deepEqual(counts(f, p.id), { projects: 1, jobs: 11, releases: 10 });
+    assert.deepEqual(counts(f, p.id), { projects: 1, jobs: 13, releases: 12 });
+    assert.equal(await readFile(failureLog, 'utf8'), 'build command failed\n');
     await assert.rejects(access(oldest.dir), { code: 'ENOENT' });
     await assert.rejects(access(middle.dir), { code: 'ENOENT' });
     await access(extra.dir);

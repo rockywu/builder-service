@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import type Database from 'better-sqlite3';
 import type { JobStatus, TestStatus } from './types.js';
 
-const keepLimit = 10;
+const keepLimit = 12;
 type Candidate = { jobId: number; number: number; reason: string };
 type Plan = {
   projectId: number;
