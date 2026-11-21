@@ -1,6 +1,6 @@
 # 本地 Docker 测试
 
-本机复用服务器的 `compose.yml`、API/Web 镜像定义和任务镜像定义。`compose.local.yml` 将项目命名为 `builder-service-local`，把前端和 API 汇到 `http://127.0.0.1:18112`。API 以开发模式接受该 HTTP 来源，执行器仍为 Docker，构建容器仍使用 `--network none`。
+本机复用服务器的 `compose.yml`、API/Web 镜像定义和任务镜像定义。`compose.local.yml` 将项目命名为 `builder-service-local`，把前端和 API 汇到 `http://127.0.0.1:18112`。API 以开发模式接受该 HTTP 来源，执行器仍为 Docker，任务容器使用普通 Docker 网络。
 
 ## 构建并启动
 
@@ -65,8 +65,6 @@ DATA_DIR="$storage_dir/data"
 APP_ORIGIN=http://127.0.0.1:18112
 BUILDER_RUNNER=docker
 BUILDER_IMAGE=$runtime_image
-BUILDER_GIT_NETWORK=none
-BUILDER_BUILD_NETWORK=none
 BUILDER_SECRET_KEY=$secret_key
 EOF
   fi
@@ -91,8 +89,6 @@ EOF
 
 ## Git 与依赖下载
 
-本地 Compose 启动 `gitee-relay`。使用 `git@gitee.com:组织/仓库.git` 的项目绑定 SSH 密钥后，远端 Git 步骤通过专用 Unix 套接字连接 `gitee.com:22`。Git 容器可以保留 `BUILDER_GIT_NETWORK=none`，构建脚本不挂载该套接字。首次连接成功后平台会记录主机公钥。其他 Git 主机或 HTTPS 拉取需要单独配置符合 [Git 出口隔离要求](../docs/runtime.md#服务器-docker-模式)的网络。
-
-基础 Compose 启动 `dependency-proxy`。新建项目和已有项目执行脚本时自动收到 HTTPS 代理设置，Corepack、pnpm 和支持代理的下载工具可按各项目的版本要求下载依赖。无需编辑项目脚本或预装指定版本的 pnpm；任务镜像包含 Corepack 的 pnpm 命令。联网工具、允许的来源、严格离线启动以及更新已有部署的步骤见[部署手册](README.md#构建依赖出口)。
+项目绑定 SSH 密钥后可以直接拉取对应仓库。脚本使用任务容器的网络下载依赖，Node 包源可在管理端设置。宿主机的代理或 DNS 有额外要求时，参见[部署手册](README.md#构建依赖出口)。
 
 从平台运行真实构建时，确认日志已越过 Corepack 下载和项目依赖安装；打包工具兼容性、签名及各架构产物要在后续步骤分别验收。

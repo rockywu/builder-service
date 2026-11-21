@@ -9,8 +9,6 @@ ARG BUILDER_UID=1000
 ARG BUILDER_GID=1000
 RUN --mount=type=bind,source=deploy/ensure-builder-user.sh,target=/tmp/ensure-builder-user.sh \
     sh /tmp/ensure-builder-user.sh "$BUILDER_UID" "$BUILDER_GID"
-COPY tools/git-relay-client.cjs /usr/local/lib/builder/git-relay-client.cjs
-COPY tools/with-dependency-proxy.mjs /usr/local/lib/builder/with-dependency-proxy.mjs
 RUN corepack enable pnpm
 WORKDIR /workspace
 USER node

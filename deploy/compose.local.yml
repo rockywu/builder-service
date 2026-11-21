@@ -4,10 +4,6 @@ services:
   api:
     environment:
       NODE_ENV: development
-      BUILDER_GITEE_RELAY_VOLUME: builder-service-local_gitee-relay
-    depends_on:
-      gitee-relay:
-        condition: service_healthy
     # Kiri can report a bind mount's root as root-owned. The data directory
     # keeps its real owner when accessed as a child of the mounted directory.
     volumes: !override
@@ -34,26 +30,3 @@ services:
       - /tmp:rw,nosuid,nodev,noexec,size=32m
     volumes:
       - ./gateway.local.conf:/etc/nginx/nginx.conf:ro
-
-  gitee-relay:
-    image: builder-service-api:${BUILDER_REVISION:?Set BUILDER_REVISION}
-    user: '1000:1000'
-    entrypoint: [node, gitee-relay.mjs]
-    read_only: true
-    cap_drop: [ALL]
-    security_opt: ['no-new-privileges:true']
-    networks: [git-out]
-    volumes:
-      - gitee-relay:/run/builder-gitee
-    healthcheck:
-      test: [CMD, node, -e, "if (!require('fs').statSync('/run/builder-gitee/ssh.sock').isSocket()) process.exit(1)"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-
-networks:
-  git-out: {}
-
-volumes:
-  gitee-relay:
-    name: builder-service-local_gitee-relay

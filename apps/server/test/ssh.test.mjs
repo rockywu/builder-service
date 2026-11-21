@@ -992,7 +992,6 @@ test(
             ['git', 'ls-remote', repository],
             undefined,
             undefined,
-            'restricted',
             1000,
             creds,
           ),
@@ -1023,7 +1022,6 @@ test(
               ['git', 'ls-remote', 'git@new.example.com:repo.git'],
               undefined,
               undefined,
-              'restricted',
               1000,
               first,
             ),
@@ -1061,7 +1059,8 @@ test(
           ),
           false,
         );
-        assert.ok(buildArgs.includes('none'));
+        assert.ok(!gitArgs.includes('--network'));
+        assert.ok(!buildArgs.includes('--network'));
         await assert.rejects(
           () =>
             docker.command(
@@ -1070,7 +1069,6 @@ test(
               ['bash', '-c', 'true'],
               undefined,
               undefined,
-              'none',
               1000,
               creds,
             ),

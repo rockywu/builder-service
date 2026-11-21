@@ -13,6 +13,20 @@ export const cleanEnvironment = () => ({
     'ssh -F /dev/null -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityFile=none -o IdentityAgent=none -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=yes',
 });
 
+// An operator may provide standard proxy variables specifically for build tools.
+export function proxyEnvironment(): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const key of ['http_proxy', 'https_proxy', 'all_proxy', 'no_proxy']) {
+    const value = process.env[key] || process.env[key.toUpperCase()];
+    if (value) env[key] = env[key.toUpperCase()] = value;
+  }
+  if (env.http_proxy || env.https_proxy || env.all_proxy) {
+    env.NODE_USE_ENV_PROXY = '1';
+    env.ELECTRON_GET_USE_PROXY = '1';
+  }
+  return env;
+}
+
 export function nodeRegistryEnvironment(registry?: string): Record<string, string> {
   if (!registry) return {};
   return {
@@ -77,6 +91,7 @@ export function runProcess(
     homeDirectory?: string;
     outputDirectory?: string;
     nodeRegistry?: string;
+    proxyEnv?: Record<string, string>;
     gitSshCommand?: string;
     output?: (text: string, error: boolean) => void;
   } = {},
@@ -102,6 +117,7 @@ export function runProcess(
         cwd: options.cwd,
         env: {
           ...cleanEnvironment(),
+          ...options.proxyEnv,
           ...nodeRegistryEnvironment(options.nodeRegistry),
           ...(options.outputDirectory
             ? { OUTPUT_DIR: options.outputDirectory }

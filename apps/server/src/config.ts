@@ -19,20 +19,17 @@ export function loadConfig() {
     throw new Error('BUILDER_RUNNER must be local or docker');
   if (process.env.NODE_ENV === 'production' && runner !== 'docker')
     throw new Error('Production builds require Docker isolation');
-  const gitDns = (process.env.BUILDER_GIT_DNS ?? '')
+  const dockerDns = (process.env.BUILDER_DOCKER_DNS ?? '')
     .split(',')
     .map((address) => address.trim())
     .filter(Boolean);
-  if (gitDns.length > 3 || gitDns.some((address) => isIP(address) === 0))
-    throw new Error('BUILDER_GIT_DNS must contain up to three IP addresses');
+  if (dockerDns.length > 3 || dockerDns.some((address) => isIP(address) === 0))
+    throw new Error('BUILDER_DOCKER_DNS must contain up to three IP addresses');
   return {
     runner: runner as 'local' | 'docker',
     buildImage: process.env.BUILDER_IMAGE ?? 'builder-runtime:node24',
-    gitNetwork: process.env.BUILDER_GIT_NETWORK ?? 'none',
-    gitDns,
-    giteeRelayVolume: process.env.BUILDER_GITEE_RELAY_VOLUME || undefined,
-    dependencyProxyVolume: process.env.BUILDER_DEPENDENCY_PROXY_VOLUME || undefined,
-    buildNetwork: process.env.BUILDER_BUILD_NETWORK ?? 'none',
+    dockerNetwork: process.env.BUILDER_DOCKER_NETWORK || undefined,
+    dockerDns,
     secretKey: process.env.BUILDER_SECRET_KEY ?? '',
     appOrigin,
     host: process.env.HOST ?? '127.0.0.1',
@@ -49,11 +46,8 @@ export type AppConfig = Omit<
   ReturnType<typeof loadConfig>,
   | 'runner'
   | 'buildImage'
-  | 'gitNetwork'
-  | 'dependencyProxyVolume'
-  | 'giteeRelayVolume'
-  | 'gitDns'
-  | 'buildNetwork'
+  | 'dockerNetwork'
+  | 'dockerDns'
   | 'secretKey'
 > &
   Partial<
@@ -61,11 +55,8 @@ export type AppConfig = Omit<
       ReturnType<typeof loadConfig>,
       | 'runner'
       | 'buildImage'
-      | 'gitNetwork'
-      | 'dependencyProxyVolume'
-      | 'giteeRelayVolume'
-      | 'gitDns'
-      | 'buildNetwork'
+      | 'dockerNetwork'
+      | 'dockerDns'
       | 'secretKey'
     >
   >;

@@ -273,7 +273,7 @@ test('global Node registry is optional, independent of concurrency and snapshott
   const endpoint = '/api/settings';
   assert.equal((await ok(f, s, 'GET', endpoint)).nodeRegistry, '');
   for (const url of [
-    'http://registry.example.com',
+    'file:///tmp/registry',
     'https://user:pass@example.com',
     'https://example.com/?token=secret',
   ]) {
@@ -282,7 +282,7 @@ test('global Node registry is optional, independent of concurrency and snapshott
       400,
     );
   }
-  const url = 'https://registry.npmmirror.com/';
+  const url = 'http://registry.internal:4873/npm/';
   await ok(f, s, 'PUT', endpoint, { nodeRegistry: url.slice(0, -1) });
   assert.equal(
     (await ok(f, s, 'PUT', endpoint, { maxConcurrent: 2 })).nodeRegistry,

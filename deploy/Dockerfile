@@ -36,9 +36,6 @@ ARG BUILDER_UID=1000
 ARG BUILDER_GID=1000
 RUN --mount=type=bind,source=deploy/ensure-builder-user.sh,target=/tmp/ensure-builder-user.sh \
     sh /tmp/ensure-builder-user.sh "$BUILDER_UID" "$BUILDER_GID"
-RUN install -d -o node -g node -m 0755 /run/builder-gitee /run/builder-dependencies
-COPY deploy/gitee-relay.mjs /app/apps/server/gitee-relay.mjs
-COPY deploy/dependency-proxy.mjs /app/apps/server/dependency-proxy.mjs
 ENV NODE_ENV=production
 WORKDIR /app/apps/server
 USER node

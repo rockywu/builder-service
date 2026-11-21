@@ -16,6 +16,7 @@ import { createHash } from 'node:crypto';
 import {
   runProcess,
   nodeRegistryEnvironment,
+  proxyEnvironment,
   groupAlive,
   confirmGroupStopped,
   ExecutionUnconfirmedError,
@@ -135,22 +136,6 @@ export class BuildRunner {
         'Docker 构建服务必须以非 root 账号运行。',
         503,
       );
-      requireValue(
-        this.config.buildNetwork === 'none',
-        '构建容器网络必须为 none，依赖下载通过专用代理。',
-        503,
-      );
-      requireValue(
-        this.config.gitNetwork &&
-          this.config.gitNetwork !== 'bridge' &&
-          this.config.gitNetwork !== 'host',
-        'Git 容器需要配置禁止管理网和元数据访问的专用网络。',
-        503,
-      );
-      if (this.config.dependencyProxyVolume) {
-        requireValue(/^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/.test(this.config.dependencyProxyVolume),
-          '依赖代理卷名称无效。', 503);
-      }
       await runProcess('docker', [
         'image',
         'inspect',
@@ -164,7 +149,6 @@ export class BuildRunner {
     args: string[],
     signal?: AbortSignal,
     output?: (s: string, e: boolean) => void,
-    network?: string,
     timeout = 120_000,
     credentials?: SshCredentials,
     task?: { history: string; workspace: string; nodeRegistry?: string },
@@ -186,19 +170,8 @@ export class BuildRunner {
       });
     }
     const name = this.name(id);
-    const relay = credentials?.host === 'gitee.com' && credentials.port === 22 &&
-      (network ?? 'none') === 'none' ? this.config.giteeRelayVolume : undefined;
-    if (relay) requireValue(/^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/.test(relay), 'Git 中继卷名称无效。', 503);
-    if (args[0] === 'git' && (args.includes('ls-remote') || args.includes('fetch')) &&
-        (network ?? 'none') === 'none' && !relay)
-      throw new PlatformError(503, '远端拉取需要配置 Git 专用网络，或为 gitee.com SSH 启用专用中继。');
-    const dependencyProxy = args[0] === 'bash' && task && !credentials && !network
-      ? this.config.dependencyProxyVolume : undefined;
+    const proxyEnv = proxyEnvironment();
     const newHostFile = '/run/builder-known-hosts';
-    const dns =
-      network && network !== 'none' && network === this.config.gitNetwork
-        ? (this.config.gitDns ?? []).flatMap((address) => ['--dns', address])
-        : [];
     const abort = () => {
       void runProcess('docker', ['stop', '--time', '2', name], {
         timeout: 10_000,
@@ -222,15 +195,11 @@ export class BuildRunner {
           '--pids-limit=256',
           '--memory=2g',
           '--cpus=2',
-          '--network',
-          network ?? 'none',
-          ...dns,
+          ...(this.config.dockerNetwork ? ['--network', this.config.dockerNetwork] : []),
+          ...(this.config.dockerDns ?? []).flatMap((address) => ['--dns', address]),
+          ...Object.keys(proxyEnv).flatMap((key) => ['--env', key]),
           ...(args[0] === 'bash' ? Object.entries(nodeRegistryEnvironment(task?.nodeRegistry))
             .flatMap(([key, value]) => ['--env', `${key}=${value}`]) : []),
-          ...(relay ? ['--mount', `type=volume,src=${relay},dst=/run/builder-gitee,readonly`] : []),
-          ...(dependencyProxy ? [
-            '--mount', `type=volume,src=${dependencyProxy},dst=/run/builder-dependencies,readonly`,
-          ] : []),
           ...(credentials
             ? [
                 '--mount',
@@ -285,12 +254,12 @@ export class BuildRunner {
           '--env',
           'GIT_TERMINAL_PROMPT=0',
           '--env',
-          `GIT_SSH_COMMAND=${credentials ? sshCommand(credentials, '/run/creds', credentials.firstConnection ? newHostFile : undefined) + (relay ? " -o 'ProxyCommand=node /usr/local/lib/builder/git-relay-client.cjs'" : '') : 'ssh -F /dev/null -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityFile=none -o IdentityAgent=none -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=yes'}`,
+          `GIT_SSH_COMMAND=${credentials ? sshCommand(credentials, '/run/creds', credentials.firstConnection ? newHostFile : undefined) : 'ssh -F /dev/null -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityFile=none -o IdentityAgent=none -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=yes'}`,
           this.config.buildImage ?? 'builder-runtime:node24',
-          ...(dependencyProxy ? ['node', '/usr/local/lib/builder/with-dependency-proxy.mjs'] : []),
           ...args,
         ],
         {
+          proxyEnv,
           ...(signal ? { signal } : {}),
           ...(output ? { output } : {}),
           timeout,
@@ -364,7 +333,6 @@ export class BuildRunner {
         ['ssh-keyscan', '-T', '5', '-p', String(port), ...addresses],
         undefined,
         undefined,
-        this.config.gitNetwork,
         10_000,
       );
     } catch (error) {
@@ -390,7 +358,6 @@ export class BuildRunner {
     const git = (
       args: string[],
       credentials?: SshCredentials,
-      network?: string,
     ) =>
       this.command(
         id,
@@ -398,7 +365,6 @@ export class BuildRunner {
         args,
         undefined,
         undefined,
-        network,
         120_000,
         credentials,
       );
@@ -421,7 +387,6 @@ export class BuildRunner {
               project.repository,
             ],
             credentials,
-            this.config.gitNetwork,
           );
           const branches: string[] = [],
             tags: string[] = [];
@@ -440,7 +405,6 @@ export class BuildRunner {
           await git(
             fetchRevision('repo', project.repository, ref),
             credentials,
-            this.config.gitNetwork,
           );
           // An annotated tag must peel to a commit; a tag on a tree/blob cannot build.
           await git(fetchedCommit('repo'));
@@ -486,7 +450,6 @@ export class BuildRunner {
             args,
             undefined,
             undefined,
-            this.config.gitNetwork,
             120_000,
             credentials,
           ),
@@ -524,7 +487,6 @@ export class BuildRunner {
           ],
           undefined,
           undefined,
-          this.config.gitNetwork,
           120_000,
           credentials,
         ),
@@ -646,7 +608,6 @@ export class BuildRunner {
     };
     const command = async (
       args: string[],
-      network?: string,
       credentials?: SshCredentials,
       cwd = workspace,
     ) => {
@@ -656,7 +617,6 @@ export class BuildRunner {
         args,
         signal,
         output,
-        network,
         job.snapshot.timeout * 60_000,
         credentials,
         { history: dir, workspace, nodeRegistry: job.snapshot.nodeRegistry ?? '' },
@@ -704,7 +664,7 @@ export class BuildRunner {
         await ensureDirectory(workspace);
         await ensureDirectory(source);
         await ensureDirectory(gitdb);
-        await command(['git', 'init', '.'], undefined, undefined, gitdb);
+        await command(['git', 'init', '.'], undefined, gitdb);
       }
       const keepDependencies = reusable && job.snapshot.useCache === true;
       const git = (...args: string[]) =>
@@ -747,7 +707,6 @@ export class BuildRunner {
             (credentials) =>
               command(
                 fetchRevision('.', job.repository!, ref),
-                this.config.gitNetwork,
                 credentials,
                 gitdb,
               ),
@@ -761,7 +720,7 @@ export class BuildRunner {
           throw error;
         }
         sha = (
-          await command(fetchedCommit('.'), undefined, undefined, gitdb)
+          await command(fetchedCommit('.'), undefined, gitdb)
         ).trim();
         requireValue(
           /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(sha) &&

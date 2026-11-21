@@ -12,4 +12,4 @@
 
 ## Docker 网络
 
-`BUILDER_GIT_NETWORK` 指定拉取容器使用的网络，默认值为 `none`。执行构建脚本的容器单独使用 `BUILDER_BUILD_NETWORK=none`。排查拉取失败时，先区分域名解析或连接失败、主机公钥变化，以及项目密钥无仓库读取权限。服务器配置见[部署手册](../deploy/README.md)，隔离要求见[运行说明](runtime.md)。
+Git 拉取和打包共享部署方的 Docker 网络设置。排查拉取失败时，先区分域名解析或连接失败、主机公钥变化，以及项目密钥无仓库读取权限。服务器配置见[部署手册](../deploy/README.md)，隔离要求见[运行说明](runtime.md)。

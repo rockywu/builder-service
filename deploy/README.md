@@ -7,9 +7,8 @@
 ## 首次部署与配置
 
 - `deploy/.env` 供 Compose 读取：`BUILDER_REVISION` 为 API 和 Web 镜像的共同版本标签；`BUILDER_UID`、`BUILDER_GID` 是服务账号；`DOCKER_SOCKET_GID` 取自 `stat -c %g /var/run/docker.sock`。`BUILDER_DATA_DIR` 是绝对路径，在宿主和 API 容器内必须一致。`BUILDER_ENV_FILE` 指向实际 API 配置文件。
-- 该服务器将实际 API 配置保存在 `/home/dev/.config/builder-service/server.env`（权限 `0600`）。参考 `apps/server/.env.template`，设置 `HOST=0.0.0.0`、`PORT=3000`、`DATA_DIR`、HTTPS `APP_ORIGIN`、Docker runner、Git 专用网络与 DNS；`BUILDER_BUILD_NETWORK=none`。首次生成 `BUILDER_SECRET_KEY` 后持续保留，主密钥与数据库备份分开保存。
-- 仅受信任的 API 调度器挂载 Docker socket。任务容器不挂载 socket；执行脚本的容器通过专用代理下载依赖，无 Git 私钥。API 使用宿主 PID 命名空间，以便重启时识别 SQLite 数据目录中的持久调度锁。
-- 该服务器为 Git 拉取配置了 `BUILDER_GIT_NETWORK=builder_git_gitee`，通过专用出口访问 `gitee.com:22`。更新或重新部署时保留这个配置；缺省值 `none` 会使新启动的拉取容器无法访问 Gitee。执行构建脚本的容器继续使用 `BUILDER_BUILD_NETWORK=none`。其他服务器需自行配置符合[构建隔离要求](../docs/runtime.md#服务器-docker-模式)的网络。
+- 该服务器将实际 API 配置保存在 `/home/dev/.config/builder-service/server.env`（权限 `0600`）。参考 `apps/server/.env.template`，设置 `HOST=0.0.0.0`、`PORT=3000`、`DATA_DIR`、HTTPS `APP_ORIGIN`、Docker runner 和任务镜像。首次生成 `BUILDER_SECRET_KEY` 后持续保留，主密钥与数据库备份分开保存。
+- 仅受信任的 API 调度器挂载 Docker socket。任务容器不挂载 socket；执行脚本的容器有独立的工作目录和 HOME，Git 私钥只挂载到对应的拉取步骤。API 使用宿主 PID 命名空间，以便重启时识别 SQLite 数据目录中的持久调度锁。
 - 该主机由 `/etc/systemd/system/builder-service.service` 启动 Compose。首次启动后，在网关开放前以服务账号运行 `python3 deploy/bootstrap-admin.py`。脚本通过本机 API 轮换默认管理员密码，验证新密码可用且旧密码失效，并将新密码保存在该账号的私有配置目录。
 
 ## 构建与更新
@@ -47,16 +46,14 @@ API 和任务镜像都需要包含该 UID 对应的用户，OpenSSH 才能运行
 
 ## 构建依赖出口
 
-基础 Compose 默认启动 `dependency-proxy`，单独挂载 Unix 套接字卷。执行构建脚本时，任务容器通过本任务的回环地址使用代理。Corepack、pnpm、npm、Git HTTPS、Electron 和遵守 HTTPS 代理设置的工具可在安装和打包阶段访问允许的 HTTPS 来源。代理无共享依赖缓存，也不挂载源码、凭据和 Docker socket。Git 拉取仍走独立配置。
+Git 拉取和脚本执行默认使用 Docker 的普通网络。新主机先用任务镜像验证 Git、DNS 和打包所需的下载地址。若主机已有适合任务的 Docker 网络，可在服务端环境文件填写 `BUILDER_DOCKER_NETWORK`；可选的 `BUILDER_DOCKER_DNS` 接受逗号分隔的 DNS 地址。通常两项均可留空。
 
-代理允许指定域名的 443 端口，解析并直接连接通过公网 IPv4 校验的地址，默认域名见[依赖来源列表](../apps/server/src/tools/dependency-hosts.ts)。遇到 HTTP 403 时，查看 `docker compose logs dependency-proxy` 中拒绝的域名。新工具或重定向 CDN 可在 Compose 的环境文件中设置 `BUILDER_DEPENDENCY_HOSTS`，以逗号分隔填写完整的允许列表，然后用 `docker compose up -d --wait` 应用。此值替换默认列表。私网源、明文 HTTP、不支持代理的自定义下载器均需另行适配。DNS 必须向代理返回可达的真实公网 IPv4 地址。
+宿主机自身通过代理上网时，可在服务端环境文件中填写容器可达的 `HTTP_PROXY`、`HTTPS_PROXY` 和 `NO_PROXY`。这些变量会传给 Git 和构建任务，其中的值对项目脚本可见。仅监听宿主回环地址的代理可通过构建网桥上的监听器转接。包源可在管理端全局指定，支持内网域名、IP 和自定义端口。
 
-如果宿主机通过本地 HTTP CONNECT 代理出网，可用 Unix 套接字转接到该代理。在 Compose 覆盖文件中只给 `dependency-proxy` 设置 `BUILDER_UPSTREAM_PROXY_SOCKET`，并把套接字所在目录只读挂载到对应位置。套接字权限应仅允许代理服务的运行用户连接。宿主机可用 systemd 的 socket 单元和 `systemd-socket-proxyd` 将连接转发到回环地址的 HTTP 代理。上游必须支持 CONNECT 到已校验的公网 IPv4 地址，构建任务仍只挂载平台自己的域名白名单代理套接字。
-
-升级已有部署时按上节重建 API 和任务镜像，并更新 Compose 服务。手工运行 API 时仅在配好代理后指定 `BUILDER_DEPENDENCY_PROXY_VOLUME`。需要严格离线的 Compose 部署可在 **Compose 环境文件** 显式设置 `BUILDER_DEPENDENCY_PROXY_VOLUME=` 并重建 API；空值会禁用任务的代理挂载。已入队的构建须在升级前完成。更改来源列表会影响随后建立的连接。
+从旧版升级时先排空任务，备份环境文件并重建镜像。移除旧的依赖代理、Gitee 中继及其 Compose 覆盖，保留宿主机实际需要的 DNS 和出口。旧版本的分阶段网络变量已停用。用真实任务验证原仓库拉取、依赖下载和产物后，再清理旧容器。
 
 ## 验证与回退
 
-通过 HTTPS 域名读回 `/api/health`、登录会话和 `/api/queue`（确认 `runner=docker` 且无调度错误）。验收真实构建时，还需确认任务固定 Git 提交、成功执行、下载产物校验和一致，并验证 Git 出口拒绝宿主/私网/元数据地址。公开下载入口为 `/downloads`。
+通过 HTTPS 域名读回 `/api/health`、登录会话和 `/api/queue`（确认 `runner=docker` 且无调度错误）。验收真实构建时，还需确认任务固定 Git 提交、成功执行、下载产物校验和一致。公开下载入口为 `/downloads`。
 
 若需下线站点，先移走网关中的 `builder.conf`，通过 `nginx -t` 后重载，再停止 `builder-service` 单元。若仅回退镜像且数据库结构兼容，恢复上一次 `BUILDER_REVISION` 后重启。两种操作均保留业务数据和密钥。
