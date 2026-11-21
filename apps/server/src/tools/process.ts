@@ -37,6 +37,18 @@ export function nodeRegistryEnvironment(registry?: string): Record<string, strin
   };
 }
 
+export interface FlutterMirrors {
+  flutterStorageUrl?: string;
+  pubHostedUrl?: string;
+}
+
+export function flutterMirrorEnvironment(mirrors?: FlutterMirrors): Record<string, string> {
+  return {
+    ...(mirrors?.flutterStorageUrl ? { FLUTTER_STORAGE_BASE_URL: mirrors.flutterStorageUrl } : {}),
+    ...(mirrors?.pubHostedUrl ? { PUB_HOSTED_URL: mirrors.pubHostedUrl } : {}),
+  };
+}
+
 export class ExecutionUnconfirmedError extends Error {}
 export class ProcessExitError extends Error {
   constructor(
@@ -91,6 +103,7 @@ export function runProcess(
     homeDirectory?: string;
     outputDirectory?: string;
     nodeRegistry?: string;
+    flutterMirrors?: FlutterMirrors;
     proxyEnv?: Record<string, string>;
     gitSshCommand?: string;
     output?: (text: string, error: boolean) => void;
@@ -119,6 +132,7 @@ export function runProcess(
           ...cleanEnvironment(),
           ...options.proxyEnv,
           ...nodeRegistryEnvironment(options.nodeRegistry),
+          ...flutterMirrorEnvironment(options.flutterMirrors),
           ...(options.outputDirectory
             ? { OUTPUT_DIR: options.outputDirectory }
             : {}),

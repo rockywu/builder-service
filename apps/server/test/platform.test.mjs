@@ -267,6 +267,35 @@ async function enqueue(f, s, p, branch = 'main') {
 const getJobs = async (f) =>
   (await f.app.inject({ url: '/api/health' })).json();
 
+test('project Flutter mirrors are optional, validated and passed to the build snapshot', async (t) => {
+  const f = await fixture(t);
+  const session = await login(f);
+  const inputWithMirrors = {
+    ...input,
+    flutterStorageUrl: 'https://storage.flutter-io.cn',
+    pubHostedUrl: 'https://pub.flutter-io.cn',
+  };
+  for (const url of ['http://mirror.example', 'https://user@mirror.test', 'https://mirror.test/?q=1']) {
+    assert.equal((await call(f, session, 'POST', '/api/projects', {
+      ...inputWithMirrors, pubHostedUrl: url,
+    })).statusCode, 400);
+  }
+  const p = await ok(f, session, 'POST', '/api/projects', inputWithMirrors);
+  const updated = await ok(f, session, 'PUT', `/api/projects/${p.id}`, input);
+  assert.equal(updated.flutterStorageUrl, inputWithMirrors.flutterStorageUrl);
+  const cleared = await ok(f, session, 'PUT', `/api/projects/${p.id}`, { ...input, pubHostedUrl: '' });
+  assert.equal(cleared.pubHostedUrl, '');
+  const project = await setupProject(f, session, await gitFixture(f, t), {
+    ...inputWithMirrors, buildScript: 'mkdir -p dist && echo "$FLUTTER_STORAGE_BASE_URL $PUB_HOSTED_URL" > dist/result.txt',
+  });
+  const job = await enqueue(f, session, project);
+  assert.equal(job.snapshot.flutterStorageUrl, inputWithMirrors.flutterStorageUrl);
+  assert.equal(job.snapshot.pubHostedUrl, inputWithMirrors.pubHostedUrl);
+  const releases = await until(() => ok(f, session, 'GET', '/api/releases'), (result) => result.items.length === 1);
+  const download = await call(f, null, 'GET', `/api/public/artifacts/${releases.items[0].artifacts[0].id}/download`);
+  assert.equal(download.body.trim(), 'https://storage.flutter-io.cn https://pub.flutter-io.cn');
+});
+
 test('global Node registry is optional, independent of concurrency and snapshotted for new jobs', async (t) => {
   const f = await fixture(t),
     s = await login(f);

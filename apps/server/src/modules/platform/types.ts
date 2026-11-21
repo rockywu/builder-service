@@ -24,6 +24,8 @@ export interface Project {
   workdir: string;
   /** 完整构建脚本，以 bash -e 执行，任一命令失败即终止。 */
   buildScript: string;
+  flutterStorageUrl?: string;
+  pubHostedUrl?: string;
   artifactPath: string;
   timeout: number;
   color: string;
@@ -42,6 +44,8 @@ export type ProjectInput = Pick<
   | 'sshKeyId'
   | 'workdir'
   | 'buildScript'
+  | 'flutterStorageUrl'
+  | 'pubHostedUrl'
   | 'artifactPath'
   | 'timeout'
 > & { icon?: string | undefined; defaultBranch?: string };
@@ -78,7 +82,7 @@ export interface Job {
   /** 构建配置快照 */
   snapshot: Pick<
     Project,
-    'workdir' | 'buildScript' | 'artifactPath' | 'timeout' | 'sshKeyId'
+    'workdir' | 'buildScript' | 'artifactPath' | 'timeout' | 'sshKeyId' | 'flutterStorageUrl' | 'pubHostedUrl'
   > & { useCache?: boolean; nodeRegistry?: string };
   steps: string[];
   script: LogLine[];

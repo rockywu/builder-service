@@ -349,6 +349,17 @@ export async function registerPlatform(
     await syncDirectory(config.dataDirectory);
     return `/api/public/icons/${key}`;
   }
+  function mirrorUrl(raw: unknown, label: string) {
+    const value = text(raw, label, 0, 2048).trim();
+    if (!value) return '';
+    const url = URL.parse(value);
+    requireValue(
+      url && /^https:\/\//i.test(value) && !url.username && !url.password &&
+        !/[?#@\\\s\x00-\x1f]/.test(value),
+      `${label}须为 HTTPS 地址，且不能包含凭据、查询参数或片段。`,
+    );
+    return url.href.replace(/\/+$/, '');
+  }
   async function saveProject(r: FastifyRequest, projectId?: number) {
     admin(r);
     const body = object(r.body);
@@ -388,6 +399,12 @@ export async function registerPlatform(
         : { defaultBranch: branch(body.defaultBranch) }),
       workdir: body.workdir,
       buildScript: script,
+      ...(body.flutterStorageUrl === undefined ? {} : {
+        flutterStorageUrl: mirrorUrl(body.flutterStorageUrl, 'Flutter SDK 镜像'),
+      }),
+      ...(body.pubHostedUrl === undefined ? {} : {
+        pubHostedUrl: mirrorUrl(body.pubHostedUrl, 'Dart 包源'),
+      }),
       artifactPath: body.artifactPath,
       timeout: integer(body.timeout, 5, 180, '超时'),
     };

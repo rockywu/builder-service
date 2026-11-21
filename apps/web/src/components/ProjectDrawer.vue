@@ -21,6 +21,8 @@ const emit = defineEmits<{ saved: [project: Project] }>();
 const formRef = ref<FormInstance>();
 const pending = ref(false);
 const iconError = ref('');
+const flutterStorageExample = 'https://storage.flutter-io.cn';
+const pubHostedExample = 'https://pub.flutter-io.cn';
 const emptyForm = (): ProjectInput => ({
   name: '',
   description: '',
@@ -29,6 +31,8 @@ const emptyForm = (): ProjectInput => ({
   buildScript:
     '#!/usr/bin/env bash\n# 在「工作目录」下以 bash -e 执行，任一命令失败即终止构建\nnpm ci\nnpm run build\n',
   artifactPath: './dist',
+  flutterStorageUrl: '',
+  pubHostedUrl: '',
   timeout: 30,
   sshKeyId: null,
 });
@@ -98,6 +102,8 @@ watch(open, (visible) => {
           workdir: p.workdir,
           buildScript: p.buildScript,
           artifactPath: p.artifactPath,
+          flutterStorageUrl: p.flutterStorageUrl ?? '',
+          pubHostedUrl: p.pubHostedUrl ?? '',
           timeout: p.timeout,
           sshKeyId: p.sshKeyId ?? null,
           icon: p.icon,
@@ -313,6 +319,12 @@ async function submit() {
             >{{ scriptCommands(form.buildScript).length }} 条命令</span
           >
         </div>
+        <el-form-item label="Flutter SDK 镜像（可选）" prop="flutterStorageUrl">
+          <el-input v-model="form.flutterStorageUrl" :placeholder="flutterStorageExample" />
+        </el-form-item>
+        <el-form-item label="Dart 包源（可选）" prop="pubHostedUrl">
+          <el-input v-model="form.pubHostedUrl" :placeholder="pubHostedExample" />
+        </el-form-item>
         <el-form-item prop="buildScript">
           <div
             class="w-full overflow-hidden rounded-lg border border-slate-800"

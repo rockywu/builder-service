@@ -16,6 +16,8 @@ import { createHash } from 'node:crypto';
 import {
   runProcess,
   nodeRegistryEnvironment,
+  flutterMirrorEnvironment,
+  type FlutterMirrors,
   proxyEnvironment,
   groupAlive,
   confirmGroupStopped,
@@ -151,7 +153,7 @@ export class BuildRunner {
     output?: (s: string, e: boolean) => void,
     timeout = 120_000,
     credentials?: SshCredentials,
-    task?: { history: string; workspace: string; nodeRegistry?: string },
+    task?: { history: string; workspace: string; nodeRegistry?: string; flutterMirrors?: FlutterMirrors },
   ) {
     requireValue(
       !credentials || args[0] === 'git',
@@ -198,7 +200,7 @@ export class BuildRunner {
           ...(this.config.dockerNetwork ? ['--network', this.config.dockerNetwork] : []),
           ...(this.config.dockerDns ?? []).flatMap((address) => ['--dns', address]),
           ...Object.keys(proxyEnv).flatMap((key) => ['--env', key]),
-          ...(args[0] === 'bash' ? Object.entries(nodeRegistryEnvironment(task?.nodeRegistry))
+          ...(args[0] === 'bash' ? Object.entries({ ...nodeRegistryEnvironment(task?.nodeRegistry), ...flutterMirrorEnvironment(task?.flutterMirrors) })
             .flatMap(([key, value]) => ['--env', `${key}=${value}`]) : []),
           ...(credentials
             ? [
@@ -619,7 +621,7 @@ export class BuildRunner {
         output,
         job.snapshot.timeout * 60_000,
         credentials,
-        { history: dir, workspace, nodeRegistry: job.snapshot.nodeRegistry ?? '' },
+        { history: dir, workspace, nodeRegistry: job.snapshot.nodeRegistry ?? '', flutterMirrors: job.snapshot },
       );
       if (buffered) {
         append(buffered);
@@ -639,6 +641,9 @@ export class BuildRunner {
         this.mode,
         this.mode === 'docker' ? this.config.buildImage : null,
         ...(job.snapshot.nodeRegistry ? [job.snapshot.nodeRegistry] : []),
+        ...(job.snapshot.flutterStorageUrl || job.snapshot.pubHostedUrl
+          ? [job.snapshot.flutterStorageUrl ?? '', job.snapshot.pubHostedUrl ?? '']
+          : []),
       ]);
       const statePath = join(workspace, 'cache.json');
       let cache: { identity: string; sha: string } | undefined;
@@ -771,6 +776,7 @@ export class BuildRunner {
           homeDirectory: home,
           outputDirectory: draft,
           nodeRegistry: job.snapshot.nodeRegistry ?? '',
+          flutterMirrors: job.snapshot,
           signal,
           output,
           timeout: job.snapshot.timeout * 60_000,

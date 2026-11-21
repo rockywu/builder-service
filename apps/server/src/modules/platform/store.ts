@@ -746,6 +746,8 @@ export function createPlatformStore(db: Database.Database) {
           finishedAt: null,
           snapshot: {
             nodeRegistry: settings().nodeRegistry,
+            ...(p.flutterStorageUrl ? { flutterStorageUrl: p.flutterStorageUrl } : {}),
+            ...(p.pubHostedUrl ? { pubHostedUrl: p.pubHostedUrl } : {}),
             useCache: d.useCache === true,
             workdir: p.workdir,
             buildScript: p.buildScript,
