@@ -68,7 +68,7 @@ interface ScannedHostKey {
 
 - 新增表 `ssh_keys`、`known_hosts`，数据库版本迁移至 4。项目沿用现有 JSON payload，增加可空字段 `sshKeyId`；删除密钥与清空项目引用在同一事务完成。列表批量读取项目与密钥后在内存组合，不使用联表查询。
 - 私钥用 AES-256-GCM 加密（每条随机 nonce，存 `nonce + ciphertext + tag`），主密钥来自环境变量 `BUILDER_SECRET_KEY`（32 字节 base64）。缺失或长度错误时：密钥相关接口返回 503 并说明原因，其余功能正常；不得回退为明文存储。
-- `.env.example` 和 `docs/runtime.md` 补充 `BUILDER_SECRET_KEY` 的生成与备份说明（丢失主密钥 = 所有私钥不可用，需要重新生成/导入）。备份包含数据库但主密钥单独保管。
+- `apps/server/.env.template` 和 `docs/runtime.md` 说明了如何生成和备份 `BUILDER_SECRET_KEY`。主密钥与数据库备份分开保管；丢失主密钥后，已有 SSH 私钥需要重新生成或导入。
 
 ## 5. 执行（`apps/server/src/tools/runner.ts`、`process.ts`）
 
