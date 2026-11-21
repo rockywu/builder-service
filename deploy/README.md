@@ -51,6 +51,8 @@ API 和任务镜像都需要包含该 UID 对应的用户，OpenSSH 才能运行
 
 代理允许指定域名的 443 端口，解析并直接连接通过公网 IPv4 校验的地址，默认域名见[依赖来源列表](../apps/server/src/tools/dependency-hosts.ts)。遇到 HTTP 403 时，查看 `docker compose logs dependency-proxy` 中拒绝的域名。新工具或重定向 CDN 可在 Compose 的环境文件中设置 `BUILDER_DEPENDENCY_HOSTS`，以逗号分隔填写完整的允许列表，然后用 `docker compose up -d --wait` 应用。此值替换默认列表。私网源、明文 HTTP、不支持代理的自定义下载器均需另行适配。DNS 必须向代理返回可达的真实公网 IPv4 地址。
 
+如果宿主机通过本地 HTTP CONNECT 代理出网，可用 Unix 套接字转接到该代理。在 Compose 覆盖文件中只给 `dependency-proxy` 设置 `BUILDER_UPSTREAM_PROXY_SOCKET`，并把套接字所在目录只读挂载到对应位置。套接字权限应仅允许代理服务的运行用户连接。宿主机可用 systemd 的 socket 单元和 `systemd-socket-proxyd` 将连接转发到回环地址的 HTTP 代理。上游必须支持 CONNECT 到已校验的公网 IPv4 地址，构建任务仍只挂载平台自己的域名白名单代理套接字。
+
 升级已有部署时按上节重建 API 和任务镜像，并更新 Compose 服务。手工运行 API 时仅在配好代理后指定 `BUILDER_DEPENDENCY_PROXY_VOLUME`。需要严格离线的 Compose 部署可在 **Compose 环境文件** 显式设置 `BUILDER_DEPENDENCY_PROXY_VOLUME=` 并重建 API；空值会禁用任务的代理挂载。已入队的构建须在升级前完成。更改来源列表会影响随后建立的连接。
 
 ## 验证与回退

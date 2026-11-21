@@ -2,7 +2,7 @@
 // is supported so package clients retain end-to-end TLS verification.
 import { lookup } from 'node:dns/promises';
 import { chmod, rm } from 'node:fs/promises';
-import { createServer } from 'node:http';
+import { createServer, request as httpRequest } from 'node:http';
 import { createConnection, isIP } from 'node:net';
 import { isPublicAddress } from './dist/tools/ssh.js';
 
@@ -15,6 +15,7 @@ for (const host of hosts) {
 }
 
 const path = '/run/builder-dependencies/proxy.sock';
+const gatewaySocket = process.env.BUILDER_UPSTREAM_PROXY_SOCKET;
 const server = createServer({ maxHeaderSize: 8192 }, (_request, response) => {
   response.writeHead(403, { Connection: 'close' }).end('HTTPS CONNECT required\n');
 });
@@ -37,19 +38,44 @@ server.on('connect', async (request, client, head) => {
       return;
     }
     if (client.destroyed) return;
-    // Dial a validated address directly to prevent a second DNS resolution.
-    const upstream = createConnection({ host: records[0].address, port: 443 });
-    client.on('close', () => upstream.destroy());
-    upstream.on('error', () => {
-      if (upstream.bytesWritten) client.destroy();
-      else client.end('HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n');
-    });
-    upstream.setTimeout(120_000, () => upstream.destroy(new Error('Upstream timeout')));
-    upstream.on('connect', () => {
+    // Both transports connect to the validated IP, without resolving the name again.
+    const address = records[0].address;
+    function tunnel(upstream, initialBytes) {
+      if (client.destroyed) return upstream.destroy();
+      client.once('close', () => upstream.destroy());
+      upstream.on('error', () => client.destroy());
+      upstream.setTimeout(120_000, () => upstream.destroy(new Error('Upstream timeout')));
       client.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+      if (initialBytes?.length) client.write(initialBytes);
       if (head.length) upstream.write(head);
       client.pipe(upstream).pipe(client);
-    });
+    }
+    const reject = () => client.end('HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n');
+    if (gatewaySocket) {
+      const authority = address + ':443';
+      const connect = httpRequest({
+        socketPath: gatewaySocket, method: 'CONNECT', path: authority,
+        headers: { Host: authority }, agent: false,
+      });
+      client.once('close', () => connect.destroy());
+      connect.setTimeout(20_000, () => connect.destroy(new Error('Gateway timeout')));
+      connect.once('error', reject);
+      connect.once('connect', (response, socket, bytes) => {
+        if (response.statusCode === 200) return tunnel(socket, bytes);
+        socket.destroy();
+        reject();
+      });
+      connect.end();
+    } else {
+      const upstream = createConnection({ host: address, port: 443 });
+      client.once('close', () => upstream.destroy());
+      upstream.setTimeout(120_000, () => upstream.destroy(new Error('Upstream timeout')));
+      upstream.once('error', reject);
+      upstream.once('connect', () => {
+        upstream.removeListener('error', reject);
+        tunnel(upstream);
+      });
+    }
   } catch {
     client.end('HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n');
   }
