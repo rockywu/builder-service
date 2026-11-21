@@ -272,6 +272,7 @@ test('project Flutter mirrors are optional, validated and passed to the build sn
   const session = await login(f);
   const inputWithMirrors = {
     ...input,
+    buildMemoryGiB: 4,
     flutterStorageUrl: 'https://storage.flutter-io.cn',
     pubHostedUrl: 'https://pub.flutter-io.cn',
   };
@@ -280,8 +281,14 @@ test('project Flutter mirrors are optional, validated and passed to the build sn
       ...inputWithMirrors, pubHostedUrl: url,
     })).statusCode, 400);
   }
+  for (const buildMemoryGiB of [0, 1, 5, 2.5, 'bad']) {
+    assert.equal((await call(f, session, 'POST', '/api/projects', {
+      ...inputWithMirrors, buildMemoryGiB,
+    })).statusCode, 400);
+  }
   const p = await ok(f, session, 'POST', '/api/projects', inputWithMirrors);
   const updated = await ok(f, session, 'PUT', `/api/projects/${p.id}`, input);
+  assert.equal(updated.buildMemoryGiB, 4);
   assert.equal(updated.flutterStorageUrl, inputWithMirrors.flutterStorageUrl);
   const cleared = await ok(f, session, 'PUT', `/api/projects/${p.id}`, { ...input, pubHostedUrl: '' });
   assert.equal(cleared.pubHostedUrl, '');
@@ -289,6 +296,7 @@ test('project Flutter mirrors are optional, validated and passed to the build sn
     ...inputWithMirrors, buildScript: 'mkdir -p dist && echo "$FLUTTER_STORAGE_BASE_URL $PUB_HOSTED_URL" > dist/result.txt',
   });
   const job = await enqueue(f, session, project);
+  assert.equal(job.snapshot.buildMemoryGiB, 4);
   assert.equal(job.snapshot.flutterStorageUrl, inputWithMirrors.flutterStorageUrl);
   assert.equal(job.snapshot.pubHostedUrl, inputWithMirrors.pubHostedUrl);
   const releases = await until(() => ok(f, session, 'GET', '/api/releases'), (result) => result.items.length === 1);
@@ -323,6 +331,7 @@ test('global Node registry is optional, independent of concurrency and snapshott
     buildScript: 'mkdir -p dist; npm config get registry > dist/result.txt',
   });
   const first = await enqueue(f, s, project);
+  assert.equal(first.snapshot.buildMemoryGiB, 2);
   assert.equal(first.snapshot.nodeRegistry, url);
   assert.equal(
     (await ok(f, s, 'PUT', endpoint, { nodeRegistry: '' })).maxConcurrent,

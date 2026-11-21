@@ -24,6 +24,7 @@ export interface Project {
   buildScript: string;
   flutterStorageUrl?: string;
   pubHostedUrl?: string;
+  buildMemoryGiB?: number;
   artifactPath: string;
   timeout: number;
   color: string;
@@ -62,6 +63,7 @@ export type ProjectInput = Pick<
   | 'buildScript'
   | 'flutterStorageUrl'
   | 'pubHostedUrl'
+  | 'buildMemoryGiB'
   | 'artifactPath'
   | 'timeout'
   | 'sshKeyId'
@@ -96,7 +98,7 @@ export interface Job {
   /** 构建配置快照 */
   snapshot: Pick<
     Project,
-    'workdir' | 'buildScript' | 'artifactPath' | 'timeout' | 'sshKeyId' | 'flutterStorageUrl' | 'pubHostedUrl'
+    'workdir' | 'buildScript' | 'artifactPath' | 'timeout' | 'sshKeyId' | 'flutterStorageUrl' | 'pubHostedUrl' | 'buildMemoryGiB'
   > & { useCache?: boolean; nodeRegistry?: string };
   steps: string[];
   script: LogLine[];

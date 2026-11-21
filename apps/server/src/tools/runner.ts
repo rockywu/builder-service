@@ -153,7 +153,7 @@ export class BuildRunner {
     output?: (s: string, e: boolean) => void,
     timeout = 120_000,
     credentials?: SshCredentials,
-    task?: { history: string; workspace: string; nodeRegistry?: string; flutterMirrors?: FlutterMirrors },
+    task?: { history: string; workspace: string; nodeRegistry?: string; flutterMirrors?: FlutterMirrors; buildMemoryGiB?: number },
   ) {
     requireValue(
       !credentials || args[0] === 'git',
@@ -195,7 +195,7 @@ export class BuildRunner {
           '--security-opt=no-new-privileges',
           '--read-only',
           '--pids-limit=256',
-          '--memory=2g',
+          `--memory=${args[0] === 'bash' ? (task?.buildMemoryGiB ?? 2) : 2}g`,
           '--cpus=2',
           ...(this.config.dockerNetwork ? ['--network', this.config.dockerNetwork] : []),
           ...(this.config.dockerDns ?? []).flatMap((address) => ['--dns', address]),
@@ -621,7 +621,7 @@ export class BuildRunner {
         output,
         job.snapshot.timeout * 60_000,
         credentials,
-        { history: dir, workspace, nodeRegistry: job.snapshot.nodeRegistry ?? '', flutterMirrors: job.snapshot },
+        { history: dir, workspace, nodeRegistry: job.snapshot.nodeRegistry ?? '', flutterMirrors: job.snapshot, buildMemoryGiB: job.snapshot.buildMemoryGiB ?? 2 },
       );
       if (buffered) {
         append(buffered);

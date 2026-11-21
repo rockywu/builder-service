@@ -399,6 +399,9 @@ export async function registerPlatform(
         : { defaultBranch: branch(body.defaultBranch) }),
       workdir: body.workdir,
       buildScript: script,
+      ...(body.buildMemoryGiB === undefined ? {} : {
+        buildMemoryGiB: integer(body.buildMemoryGiB, 2, 4, '构建内存（GiB）'),
+      }),
       ...(body.flutterStorageUrl === undefined ? {} : {
         flutterStorageUrl: mirrorUrl(body.flutterStorageUrl, 'Flutter SDK 镜像'),
       }),

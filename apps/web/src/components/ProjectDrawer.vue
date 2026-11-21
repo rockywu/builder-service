@@ -33,6 +33,7 @@ const emptyForm = (): ProjectInput => ({
   artifactPath: './dist',
   flutterStorageUrl: '',
   pubHostedUrl: '',
+  buildMemoryGiB: 2,
   timeout: 30,
   sshKeyId: null,
 });
@@ -104,6 +105,7 @@ watch(open, (visible) => {
           artifactPath: p.artifactPath,
           flutterStorageUrl: p.flutterStorageUrl ?? '',
           pubHostedUrl: p.pubHostedUrl ?? '',
+          buildMemoryGiB: p.buildMemoryGiB ?? 2,
           timeout: p.timeout,
           sshKeyId: p.sshKeyId ?? null,
           icon: p.icon,
@@ -378,6 +380,9 @@ async function submit() {
               <code>$OUTPUT_DIR</code
               >；未写入时从此路径收集。成功产物统一归档到本项目的 outputs/。
             </p>
+          </el-form-item>
+          <el-form-item label="构建内存上限（GiB）" prop="buildMemoryGiB">
+            <el-input-number v-model="form.buildMemoryGiB" :min="2" :max="4" :step="1" :precision="0" class="!w-full" />
           </el-form-item>
           <el-form-item label="超时时间（分钟）" prop="timeout">
             <el-input-number

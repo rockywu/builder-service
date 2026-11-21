@@ -1059,6 +1059,13 @@ test(
           ),
           false,
         );
+        assert.ok(gitArgs.includes('--memory=2g'));
+        assert.ok(buildArgs.includes('--memory=2g'));
+        const projectArgs = JSON.parse(await docker.command(
+          'fixture', dir, ['bash', '-c', 'true'], undefined, undefined, 1000,
+          undefined, { history: dir, workspace: dir, buildMemoryGiB: 4 },
+        ));
+        assert.ok(projectArgs.includes('--memory=4g'));
         assert.ok(!gitArgs.includes('--network'));
         assert.ok(!buildArgs.includes('--network'));
         await assert.rejects(
