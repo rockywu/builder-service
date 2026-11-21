@@ -19,7 +19,8 @@ declare module 'fastify' {
 const tokenHash = (value: string) =>
   createHash('sha256').update(value).digest('hex');
 const csrfToken = (value: string) => tokenHash(`csrf:${value}`);
-const sessionSeconds = 8 * 60 * 60;
+// 登录有效期 30 天；服务端按 expires_at 校验，过期后需重新登录。
+const sessionSeconds = 30 * 24 * 60 * 60;
 const cookieName = 'builder_session';
 
 export async function registerAuth(

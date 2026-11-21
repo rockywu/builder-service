@@ -100,7 +100,7 @@ test('default admin is hashed; successful login returns safe data and opaque coo
   const session = await signIn();
   assert.match(session.setCookie, /HttpOnly/);
   assert.match(session.setCookie, /SameSite=Strict/);
-  assert.match(session.setCookie, /Max-Age=28800/);
+  assert.match(session.setCookie, /Max-Age=2592000/);
   assert.deepEqual(Object.keys(session.body).sort(), ['csrfToken', 'user']);
   assert.deepEqual(Object.keys(session.body.user).sort(), [
     'id',

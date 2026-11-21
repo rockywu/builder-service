@@ -22,7 +22,6 @@ declare module 'vue-router' {
 export const router = createRouter({
   history: createWebHistory(),
   routes: [
-    { path: '/', redirect: '/login' },
     { path: '/login', component: LoginPage, meta: { title: '登录' } },
     {
       path: '/admin',
@@ -45,23 +44,33 @@ export const router = createRouter({
         },
       ],
     },
+    { path: '/downloads', redirect: '/' },
     {
-      path: '/downloads',
+      path: '/',
       component: PublicLayout,
       children: [
         { path: '', component: DownloadsPage, meta: { title: '项目下载' } },
         {
-          path: ':projectSlug',
+          path: 'downloads/:projectSlug',
           component: ProjectDownloadsPage,
           meta: { title: '项目下载' },
         },
       ],
     },
-    { path: '/:pathMatch(.*)*', redirect: '/downloads' },
+    { path: '/:pathMatch(.*)*', redirect: '/' },
   ],
 });
 
 router.beforeEach(async (to) => {
+  // 登录页：会话仍有效则直接进入内页；已过期或无法确认时停留在登录页
+  if (to.path === '/login' && !to.query.error) {
+    try {
+      if (await refreshSession()) return { path: '/admin/projects' };
+    } catch {
+      // 会话接口异常：显示登录页，由用户手动登录
+    }
+    return true;
+  }
   // 公开下载页不调用认证接口
   if (!to.matched.some((record) => record.meta.requiresAuth)) return true;
   try {

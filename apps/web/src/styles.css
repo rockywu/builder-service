@@ -28,3 +28,166 @@
   --el-border-radius-base: 6px;
   --el-font-family: var(--font-sans);
 }
+
+/* 公开下载页：深色科技风。仅作用于 .tech 容器，不影响管理端。 */
+.tech {
+  color-scheme: dark;
+  background-color: #05070d;
+  position: relative;
+  isolation: isolate;
+
+  --el-color-primary: #22d3ee;
+  --el-color-primary-light-3: #67e8f9;
+  --el-color-primary-light-5: #22d3ee80;
+  --el-color-primary-light-7: #22d3ee40;
+  --el-color-primary-light-8: #22d3ee30;
+  --el-color-primary-light-9: #22d3ee1f;
+  --el-color-primary-dark-2: #06b6d4;
+  --el-color-success: #4ade80;
+  --el-color-success-light-8: #4ade8040;
+  --el-color-success-light-9: #4ade801f;
+  --el-color-warning: #fbbf24;
+  --el-color-warning-light-8: #fbbf2440;
+  --el-color-warning-light-9: #fbbf241f;
+  --el-color-danger: #f87171;
+  --el-color-danger-light-8: #f8717140;
+  --el-color-danger-light-9: #f871711f;
+  --el-color-info: #94a3b8;
+  --el-color-info-light-8: #94a3b840;
+  --el-color-info-light-9: #94a3b81f;
+  --el-bg-color: #0b1220;
+  --el-bg-color-overlay: #0b1220;
+  --el-fill-color-blank: rgb(255 255 255 / 0.04);
+  --el-fill-color-light: rgb(255 255 255 / 0.06);
+  --el-fill-color: rgb(255 255 255 / 0.08);
+  --el-border-color: rgb(255 255 255 / 0.14);
+  --el-border-color-light: rgb(255 255 255 / 0.1);
+  --el-text-color-primary: #e2e8f0;
+  --el-text-color-regular: #cbd5e1;
+  --el-text-color-secondary: #94a3b8;
+  --el-text-color-placeholder: #64748b;
+  --el-segmented-bg-color: rgb(255 255 255 / 0.05);
+  --el-segmented-item-selected-bg-color: #22d3ee;
+  --el-segmented-item-selected-color: #04121c;
+  --el-segmented-item-hover-bg-color: rgb(255 255 255 / 0.08);
+  --el-pagination-button-bg-color: rgb(255 255 255 / 0.06);
+  --el-pagination-hover-color: #22d3ee;
+  --el-empty-fill-color-0: transparent;
+}
+.tech .el-button--primary:not(.is-link) {
+  --el-button-text-color: #04121c;
+  --el-button-hover-text-color: #04121c;
+  --el-button-active-text-color: #04121c;
+  font-weight: 600;
+  box-shadow: 0 0 18px rgb(34 211 238 / 0.35);
+}
+.tech .el-segmented {
+  --el-segmented-color: #94a3b8;
+  border: 1px solid rgb(255 255 255 / 0.08);
+}
+.tech .el-segmented__item-selected {
+  box-shadow: 0 0 14px rgb(34 211 238 / 0.4);
+}
+.tech .el-input__wrapper {
+  backdrop-filter: blur(8px);
+}
+.tech .el-input__wrapper.is-focus {
+  box-shadow:
+    0 0 0 1px #22d3ee inset,
+    0 0 20px rgb(34 211 238 / 0.25);
+}
+.tech .el-empty__image svg {
+  opacity: 0.35;
+}
+.tech .el-pagination.is-background .el-pager li.is-active {
+  color: #04121c;
+}
+
+/* 背景：网格 + 渐隐遮罩 + 两团缓慢漂移的光晕 */
+.tech-bg {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  overflow: hidden;
+  pointer-events: none;
+}
+.tech-bg::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image:
+    linear-gradient(rgb(148 163 184 / 0.07) 1px, transparent 1px),
+    linear-gradient(90deg, rgb(148 163 184 / 0.07) 1px, transparent 1px);
+  background-size: 56px 56px;
+  mask-image: radial-gradient(
+    ellipse 80% 60% at 50% 0%,
+    #000 30%,
+    transparent 75%
+  );
+}
+.tech-bg i {
+  position: absolute;
+  border-radius: 9999px;
+  filter: blur(110px);
+  opacity: 0.5;
+  animation: drift 22s ease-in-out infinite alternate;
+}
+.tech-bg i:nth-child(1) {
+  width: 46rem;
+  height: 26rem;
+  top: -12rem;
+  left: -8rem;
+  background: rgb(34 211 238 / 0.22);
+}
+.tech-bg i:nth-child(2) {
+  width: 40rem;
+  height: 26rem;
+  top: -8rem;
+  right: -10rem;
+  background: rgb(129 140 248 / 0.26);
+  animation-delay: -9s;
+}
+@keyframes drift {
+  to {
+    transform: translate3d(4rem, 3rem, 0) scale(1.15);
+  }
+}
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+}
+.rise {
+  animation: rise 0.6s cubic-bezier(0.2, 0.7, 0.2, 1) both;
+  animation-delay: var(--d, 0ms);
+}
+@media (prefers-reduced-motion: reduce) {
+  .tech-bg i,
+  .rise {
+    animation: none;
+  }
+}
+
+/* 鼠标跟随高光卡片 */
+.spot {
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+}
+.spot::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  opacity: 0;
+  transition: opacity 0.25s;
+  background: radial-gradient(
+    380px circle at var(--x, 50%) var(--y, 50%),
+    rgb(34 211 238 / 0.16),
+    transparent 45%
+  );
+}
+.spot:hover::before {
+  opacity: 1;
+}
