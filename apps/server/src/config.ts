@@ -30,6 +30,8 @@ export function loadConfig() {
     buildImage: process.env.BUILDER_IMAGE ?? 'builder-runtime:node24',
     gitNetwork: process.env.BUILDER_GIT_NETWORK ?? 'none',
     gitDns,
+    giteeRelayVolume: process.env.BUILDER_GITEE_RELAY_VOLUME || undefined,
+    dependencyProxyVolume: process.env.BUILDER_DEPENDENCY_PROXY_VOLUME || undefined,
     buildNetwork: process.env.BUILDER_BUILD_NETWORK ?? 'none',
     secretKey: process.env.BUILDER_SECRET_KEY ?? '',
     appOrigin,
@@ -48,6 +50,8 @@ export type AppConfig = Omit<
   | 'runner'
   | 'buildImage'
   | 'gitNetwork'
+  | 'dependencyProxyVolume'
+  | 'giteeRelayVolume'
   | 'gitDns'
   | 'buildNetwork'
   | 'secretKey'
@@ -58,6 +62,8 @@ export type AppConfig = Omit<
       | 'runner'
       | 'buildImage'
       | 'gitNetwork'
+      | 'dependencyProxyVolume'
+      | 'giteeRelayVolume'
       | 'gitDns'
       | 'buildNetwork'
       | 'secretKey'

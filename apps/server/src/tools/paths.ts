@@ -64,8 +64,8 @@ export async function collectArtifacts(
       '产物必须是普通文件，不能是硬链接。',
     );
     requireValue(
-      result.length < 100 && (total += stat.size) <= 512 * 1024 * 1024,
-      '产物超过 100 个文件或 512 MB 限额。',
+      result.length < 100 && (total += stat.size) <= 768 * 1024 * 1024,
+      '产物超过 100 个文件或 768 MiB 限额。',
     );
     const sourceFile = await open(
       path,

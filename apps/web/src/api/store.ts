@@ -20,7 +20,7 @@ export const db = reactive({
   jobs: [] as Job[],
   releases: [] as Release[],
   users: [] as User[],
-  settings: { maxConcurrent: 1 },
+  settings: { maxConcurrent: 1, nodeRegistry: '' },
   /** 仅管理员按需加载，不参与全局轮询刷新。 */
   sshKeys: [] as SshKey[],
 });
@@ -83,7 +83,7 @@ async function performRefresh() {
     all<Project>('/projects', signal),
     all<Job>('/jobs', signal),
     all<Release>('/releases', signal),
-    request<{ maxConcurrent: number; error: string | null }>('/queue', {
+    request<{ maxConcurrent: number; nodeRegistry?: string; error: string | null }>('/queue', {
       signal,
     }),
     role === 'admin' ? all<User>('/users', signal) : Promise.resolve([]),
@@ -118,6 +118,7 @@ async function performRefresh() {
   db.releases = merge(db.releases, releases);
   db.users = merge(db.users, users);
   db.settings.maxConcurrent = queue.maxConcurrent;
+  db.settings.nodeRegistry = queue.nodeRegistry ?? '';
   if (queue.error && queue.error !== lastError) {
     lastError = queue.error;
     ElMessage.error(queue.error);
@@ -256,8 +257,8 @@ export async function updateUser(
 export async function deleteUser(id: number, _operatorId: number) {
   return mutation(`/users/${id}`, 'DELETE');
 }
-export async function saveSettings(maxConcurrent: number) {
-  return mutation('/settings', 'PUT', { maxConcurrent });
+export async function saveSettings(patch: Partial<typeof db.settings>) {
+  return mutation<typeof db.settings>('/settings', 'PUT', patch);
 }
 /* Git SSH 密钥按需独立加载。 */
 export async function loadSshKeys() {

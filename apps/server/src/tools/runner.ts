@@ -15,6 +15,7 @@ import { join, resolve, relative, dirname } from 'node:path';
 import { createHash } from 'node:crypto';
 import {
   runProcess,
+  nodeRegistryEnvironment,
   groupAlive,
   confirmGroupStopped,
   ExecutionUnconfirmedError,
@@ -136,7 +137,7 @@ export class BuildRunner {
       );
       requireValue(
         this.config.buildNetwork === 'none',
-        '构建容器网络必须为 none；联网构建需先提供受限出口方案。',
+        '构建容器网络必须为 none，依赖下载通过专用代理。',
         503,
       );
       requireValue(
@@ -146,6 +147,10 @@ export class BuildRunner {
         'Git 容器需要配置禁止管理网和元数据访问的专用网络。',
         503,
       );
+      if (this.config.dependencyProxyVolume) {
+        requireValue(/^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/.test(this.config.dependencyProxyVolume),
+          '依赖代理卷名称无效。', 503);
+      }
       await runProcess('docker', [
         'image',
         'inspect',
@@ -162,7 +167,7 @@ export class BuildRunner {
     network?: string,
     timeout = 120_000,
     credentials?: SshCredentials,
-    task?: { history: string; workspace: string },
+    task?: { history: string; workspace: string; nodeRegistry?: string },
   ) {
     requireValue(
       !credentials || args[0] === 'git',
@@ -181,6 +186,14 @@ export class BuildRunner {
       });
     }
     const name = this.name(id);
+    const relay = credentials?.host === 'gitee.com' && credentials.port === 22 &&
+      (network ?? 'none') === 'none' ? this.config.giteeRelayVolume : undefined;
+    if (relay) requireValue(/^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/.test(relay), 'Git 中继卷名称无效。', 503);
+    if (args[0] === 'git' && (args.includes('ls-remote') || args.includes('fetch')) &&
+        (network ?? 'none') === 'none' && !relay)
+      throw new PlatformError(503, '远端拉取需要配置 Git 专用网络，或为 gitee.com SSH 启用专用中继。');
+    const dependencyProxy = args[0] === 'bash' && task && !credentials && !network
+      ? this.config.dependencyProxyVolume : undefined;
     const newHostFile = '/run/builder-known-hosts';
     const dns =
       network && network !== 'none' && network === this.config.gitNetwork
@@ -212,6 +225,12 @@ export class BuildRunner {
           '--network',
           network ?? 'none',
           ...dns,
+          ...(args[0] === 'bash' ? Object.entries(nodeRegistryEnvironment(task?.nodeRegistry))
+            .flatMap(([key, value]) => ['--env', `${key}=${value}`]) : []),
+          ...(relay ? ['--mount', `type=volume,src=${relay},dst=/run/builder-gitee,readonly`] : []),
+          ...(dependencyProxy ? [
+            '--mount', `type=volume,src=${dependencyProxy},dst=/run/builder-dependencies,readonly`,
+          ] : []),
           ...(credentials
             ? [
                 '--mount',
@@ -266,8 +285,9 @@ export class BuildRunner {
           '--env',
           'GIT_TERMINAL_PROMPT=0',
           '--env',
-          `GIT_SSH_COMMAND=${credentials ? sshCommand(credentials, '/run/creds', credentials.firstConnection ? newHostFile : undefined) : 'ssh -F /dev/null -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityFile=none -o IdentityAgent=none -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=yes'}`,
+          `GIT_SSH_COMMAND=${credentials ? sshCommand(credentials, '/run/creds', credentials.firstConnection ? newHostFile : undefined) + (relay ? " -o 'ProxyCommand=node /usr/local/lib/builder/git-relay-client.cjs'" : '') : 'ssh -F /dev/null -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityFile=none -o IdentityAgent=none -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=yes'}`,
           this.config.buildImage ?? 'builder-runtime:node24',
+          ...(dependencyProxy ? ['node', '/usr/local/lib/builder/with-dependency-proxy.mjs'] : []),
           ...args,
         ],
         {
@@ -639,7 +659,7 @@ export class BuildRunner {
         network,
         job.snapshot.timeout * 60_000,
         credentials,
-        { history: dir, workspace },
+        { history: dir, workspace, nodeRegistry: job.snapshot.nodeRegistry ?? '' },
       );
       if (buffered) {
         append(buffered);
@@ -658,6 +678,7 @@ export class BuildRunner {
         ref,
         this.mode,
         this.mode === 'docker' ? this.config.buildImage : null,
+        ...(job.snapshot.nodeRegistry ? [job.snapshot.nodeRegistry] : []),
       ]);
       const statePath = join(workspace, 'cache.json');
       let cache: { identity: string; sha: string } | undefined;
@@ -790,6 +811,7 @@ export class BuildRunner {
           markerDirectory: dir,
           homeDirectory: home,
           outputDirectory: draft,
+          nodeRegistry: job.snapshot.nodeRegistry ?? '',
           signal,
           output,
           timeout: job.snapshot.timeout * 60_000,

@@ -13,6 +13,16 @@ export const cleanEnvironment = () => ({
     'ssh -F /dev/null -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityFile=none -o IdentityAgent=none -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=yes',
 });
 
+export function nodeRegistryEnvironment(registry?: string): Record<string, string> {
+  if (!registry) return {};
+  return {
+    npm_config_registry: registry,
+    YARN_REGISTRY: registry,
+    YARN_NPM_REGISTRY_SERVER: registry,
+    COREPACK_NPM_REGISTRY: registry.replace(/\/+$/, ''),
+  };
+}
+
 export class ExecutionUnconfirmedError extends Error {}
 export class ProcessExitError extends Error {
   constructor(
@@ -66,6 +76,7 @@ export function runProcess(
     markerDirectory?: string;
     homeDirectory?: string;
     outputDirectory?: string;
+    nodeRegistry?: string;
     gitSshCommand?: string;
     output?: (text: string, error: boolean) => void;
   } = {},
@@ -91,6 +102,7 @@ export function runProcess(
         cwd: options.cwd,
         env: {
           ...cleanEnvironment(),
+          ...nodeRegistryEnvironment(options.nodeRegistry),
           ...(options.outputDirectory
             ? { OUTPUT_DIR: options.outputDirectory }
             : {}),

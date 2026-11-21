@@ -46,7 +46,16 @@ const parse = <T>(value: string): T => JSON.parse(value) as T;
 
 export function initializePlatform(db: Database.Database) {
   const version = db.pragma('user_version', { simple: true }) as number;
-  if (version >= 4) return;
+  if (version >= 5) return;
+  if (version === 4) {
+    db.transaction(() => {
+      db.exec(
+        "ALTER TABLE system_settings ADD COLUMN node_registry TEXT NOT NULL DEFAULT ''",
+      );
+      db.pragma('user_version=5');
+    }).immediate();
+    return;
+  }
   if (version === 3) {
     db.transaction(() => {
       db.exec(`
@@ -55,6 +64,7 @@ export function initializePlatform(db: Database.Database) {
       `);
       db.pragma('user_version=4');
     }).immediate();
+    initializePlatform(db);
     return;
   }
   if (version === 2) {
@@ -263,13 +273,12 @@ export function createPlatformStore(db: Database.Database) {
       createdAt: r.created_at,
       lastLoginAt: r.last_login_at,
     }));
-  const settings = () => ({
-    maxConcurrent: (
-      db
-        .prepare('SELECT max_concurrent FROM system_settings WHERE id=1')
-        .get() as { max_concurrent: number }
-    ).max_concurrent,
-  });
+  const settings = () =>
+    db
+      .prepare(
+        'SELECT max_concurrent AS maxConcurrent, node_registry AS nodeRegistry FROM system_settings WHERE id=1',
+      )
+      .get() as { maxConcurrent: number; nodeRegistry: string };
   const audit = (a: Actor, action: string, target: unknown) =>
     db
       .prepare(
@@ -736,6 +745,7 @@ export function createPlatformStore(db: Database.Database) {
           startedAt: null,
           finishedAt: null,
           snapshot: {
+            nodeRegistry: settings().nodeRegistry,
             useCache: d.useCache === true,
             workdir: p.workdir,
             buildScript: p.buildScript,
@@ -1021,10 +1031,18 @@ export function createPlatformStore(db: Database.Database) {
       }
       case 'saveSettings':
         admin();
-        db.prepare(
-          'UPDATE system_settings SET max_concurrent=? WHERE id=1',
-        ).run(Number(d.maxConcurrent));
-        audit(actor!, 'settings.update', 'concurrency');
+        if (d.maxConcurrent !== undefined) {
+          db.prepare(
+            'UPDATE system_settings SET max_concurrent=? WHERE id=1',
+          ).run(Number(d.maxConcurrent));
+          audit(actor!, 'settings.update', 'concurrency');
+        }
+        if (d.nodeRegistry !== undefined) {
+          db.prepare(
+            'UPDATE system_settings SET node_registry=? WHERE id=1',
+          ).run(String(d.nodeRegistry));
+          audit(actor!, 'settings.update', 'node-registry');
+        }
         return settings();
       case 'createUser': {
         admin();

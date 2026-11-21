@@ -4,6 +4,12 @@ services:
   api:
     image: builder-service-api:${BUILDER_REVISION:?Set BUILDER_REVISION}
     user: '${BUILDER_UID:?Set BUILDER_UID}:${BUILDER_GID:?Set BUILDER_GID}'
+    environment:
+      - BUILDER_DEPENDENCY_HOSTS
+      - BUILDER_DEPENDENCY_PROXY_VOLUME=${BUILDER_DEPENDENCY_PROXY_VOLUME-${COMPOSE_PROJECT_NAME}_dependency-proxy}
+    depends_on:
+      dependency-proxy:
+        condition: service_healthy
     group_add:
       - '${DOCKER_SOCKET_GID:?Set DOCKER_SOCKET_GID}'
     dns: [1.1.1.1, 8.8.8.8]
@@ -44,6 +50,28 @@ services:
         max-size: '10m'
         max-file: '3'
 
+  dependency-proxy:
+    image: builder-service-api:${BUILDER_REVISION:?Set BUILDER_REVISION}
+    user: '1000:1000'
+    entrypoint: [node, dependency-proxy.mjs]
+    environment:
+      - BUILDER_DEPENDENCY_HOSTS
+    networks: [dependency-out]
+    volumes:
+      - dependency-proxy:/run/builder-dependencies
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ['no-new-privileges:true']
+    healthcheck:
+      test: [CMD, node, -e, "require('net').connect('/run/builder-dependencies/proxy.sock').on('connect', function(){this.end()}).on('error',()=>process.exit(1))"]
+      interval: 10s
+      timeout: 3s
+      retries: 4
+    restart: 'on-failure:3'
+    mem_limit: 192m
+    pids_limit: 32
+    logging: *bounded_logs
+
   web:
     image: builder-service-web:${BUILDER_REVISION:?Set BUILDER_REVISION}
     read_only: true
@@ -63,3 +91,9 @@ services:
     mem_limit: 128m
     pids_limit: 64
     logging: *bounded_logs
+
+networks:
+  dependency-out: {}
+
+volumes:
+  dependency-proxy: {}

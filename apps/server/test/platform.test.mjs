@@ -267,6 +267,58 @@ async function enqueue(f, s, p, branch = 'main') {
 const getJobs = async (f) =>
   (await f.app.inject({ url: '/api/health' })).json();
 
+test('global Node registry is optional, independent of concurrency and snapshotted for new jobs', async (t) => {
+  const f = await fixture(t),
+    s = await login(f);
+  const endpoint = '/api/settings';
+  assert.equal((await ok(f, s, 'GET', endpoint)).nodeRegistry, '');
+  for (const url of [
+    'http://registry.example.com',
+    'https://user:pass@example.com',
+    'https://example.com/?token=secret',
+  ]) {
+    assert.equal(
+      (await call(f, s, 'PUT', endpoint, { nodeRegistry: url })).statusCode,
+      400,
+    );
+  }
+  const url = 'https://registry.npmmirror.com/';
+  await ok(f, s, 'PUT', endpoint, { nodeRegistry: url.slice(0, -1) });
+  assert.equal(
+    (await ok(f, s, 'PUT', endpoint, { maxConcurrent: 2 })).nodeRegistry,
+    url,
+  );
+  await f.restart();
+  assert.equal((await ok(f, s, 'GET', endpoint)).nodeRegistry, url);
+  const project = await setupProject(f, s, await gitFixture(f, t), {
+    buildScript: 'mkdir -p dist; npm config get registry > dist/result.txt',
+  });
+  const first = await enqueue(f, s, project);
+  assert.equal(first.snapshot.nodeRegistry, url);
+  assert.equal(
+    (await ok(f, s, 'PUT', endpoint, { nodeRegistry: '' })).maxConcurrent,
+    2,
+  );
+  const second = await enqueue(f, s, project);
+  assert.equal(second.snapshot.nodeRegistry, '');
+  const releases = await until(
+    () => ok(f, s, 'GET', '/api/releases'),
+    (data) => data.items.length === 2,
+  );
+  for (const release of releases.items) {
+    const file = await call(
+      f,
+      null,
+      'GET',
+      `/api/public/artifacts/${release.artifacts[0].id}/download`,
+    );
+    assert.equal(
+      file.body.trim(),
+      release.jobId === first.id ? url : 'https://registry.npmjs.org/',
+    );
+  }
+});
+
 test(
   'optional test pull does not pin a commit; queued branch and same-named tag use isolated live checkouts',
   { timeout: 30000 },

@@ -39,10 +39,40 @@ const effect = computed(() => {
 async function save() {
   saving.value = true;
   try {
-    await saveSettings(value.value);
+    await saveSettings({ maxConcurrent: value.value });
     ElMessage.success(`并行上限已设为 ${value.value}`);
   } finally {
     saving.value = false;
+  }
+}
+
+const registryDraft = ref<string | null>(null);
+const registry = computed({
+  get: () => registryDraft.value ?? db.settings.nodeRegistry,
+  set: (next: string) => {
+    registryDraft.value = next;
+  },
+});
+const registryChanged = computed(
+  () => registry.value.trim() !== db.settings.nodeRegistry,
+);
+const savingRegistry = ref(false);
+const registryError = ref('');
+async function saveRegistry() {
+  savingRegistry.value = true;
+  registryError.value = '';
+  try {
+    const settings = await saveSettings({
+      nodeRegistry: registry.value.trim(),
+    });
+    db.settings.nodeRegistry = settings.nodeRegistry;
+    registryDraft.value = null;
+    ElMessage.success('包源设置已保存');
+  } catch (error) {
+    registryError.value =
+      error instanceof Error ? error.message : '保存包源失败';
+  } finally {
+    savingRegistry.value = false;
   }
 }
 
@@ -311,6 +341,53 @@ onMounted(() => {
       </p>
     </section>
   </div>
+
+  <section class="mt-10">
+    <h2 class="mb-4 text-base font-semibold text-slate-900">构建依赖源</h2>
+    <form
+      class="rounded-xl border border-slate-200 bg-white p-6"
+      @submit.prevent="registryChanged && !savingRegistry && saveRegistry()"
+    >
+      <label for="node-registry" class="font-semibold text-slate-900"
+        >Node 包源地址</label
+      >
+      <p id="node-registry-help" class="mt-1 text-sm text-slate-500">
+        所有项目新提交的构建使用此地址下载 npm、pnpm、Yarn
+        依赖。留空使用项目或工具的默认源。
+      </p>
+      <div class="mt-4 flex flex-wrap items-center gap-2">
+        <el-input
+          id="node-registry"
+          v-model="registry"
+          class="!w-full sm:!w-96"
+          placeholder="https://registry.npmmirror.com"
+          aria-describedby="node-registry-help"
+          clearable
+          :disabled="savingRegistry"
+          @input="registryError = ''"
+        />
+        <el-button
+          :disabled="!registryChanged || savingRegistry"
+          @click="
+            registryDraft = null;
+            registryError = '';
+          "
+          >还原</el-button
+        >
+        <el-button
+          type="primary"
+          native-type="submit"
+          class="!ml-0"
+          :disabled="!registryChanged"
+          :loading="savingRegistry"
+          >保存</el-button
+        >
+      </div>
+      <p v-if="registryError" role="alert" class="mt-2 text-sm text-red-600">
+        {{ registryError }}
+      </p>
+    </form>
+  </section>
 
   <SshKeyDialog v-model="keyDialog" :ssh-key="editingKey" />
 </template>

@@ -14,6 +14,7 @@ import type {
   User,
 } from './types.js';
 import { requireValue } from './errors.js';
+import { dependencyHosts } from '../../tools/dependency-hosts.js';
 import { relativePath, syncDirectory } from '../../tools/paths.js';
 import type { DatabaseClient } from '../../db/client.js';
 import type { AppConfig } from '../../config.js';
@@ -608,18 +609,37 @@ export async function registerPlatform(
   app.get('/api/settings', (r) => list('settings', r));
   app.put('/api/settings', async (r) => {
     admin(r);
-    const maxConcurrent = integer(
-      object(r.body).maxConcurrent,
-      1,
-      16,
-      '并行构建数',
-    );
-    const result = await service.command(
-      'saveSettings',
-      { maxConcurrent },
-      actor(r),
-    );
-    void service.pump();
+    const body = object(r.body);
+    const patch: { maxConcurrent?: number; nodeRegistry?: string } = {};
+    if ('maxConcurrent' in body)
+      patch.maxConcurrent = integer(body.maxConcurrent, 1, 16, '并行构建数');
+    if ('nodeRegistry' in body) {
+      const value = text(body.nodeRegistry, 'Node 包源地址', 0, 2048).trim();
+      patch.nodeRegistry = '';
+      if (value) {
+        const url = URL.parse(value);
+        requireValue(
+          url &&
+            /^https:\/\//i.test(value) &&
+            url.protocol === 'https:' &&
+            !url.port &&
+            !url.username &&
+            !url.password &&
+            !/[?#@\\\s\x00-\x1f]/.test(value) &&
+            /^[a-z0-9-]+(?:\.[a-z0-9-]+)+$/i.test(url.hostname),
+          '请输入 HTTPS 包源地址，使用 443 端口，并移除账号、密码、查询参数和片段。',
+        );
+        if (config.runner === 'docker' && config.dependencyProxyVolume)
+          requireValue(
+            dependencyHosts().has(url.hostname),
+            '该域名未在构建依赖出口中放行，请在部署配置 BUILDER_DEPENDENCY_HOSTS 中添加。',
+          );
+        patch.nodeRegistry = url.href.replace(/\/+$/, '') + '/';
+      }
+    }
+    requireValue(Object.keys(patch).length, '请选择要保存的设置。');
+    const result = await service.command('saveSettings', patch, actor(r));
+    if (patch.maxConcurrent !== undefined) void service.pump();
     return result;
   });
   app.get('/api/users', async (r) => {

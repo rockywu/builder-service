@@ -1096,7 +1096,7 @@ test(
     await closeDatabase(db);
     const old = new Database(join(data, 'platform.db'));
     old.exec(
-      'DROP TABLE ssh_keys; DROP TABLE known_hosts; PRAGMA user_version=3;',
+      'DROP TABLE ssh_keys; DROP TABLE known_hosts; ALTER TABLE system_settings DROP COLUMN node_registry; PRAGMA user_version=3;',
     );
     old.prepare('INSERT INTO projects(slug,payload) VALUES(?,?)').run(
       'old',
@@ -1148,7 +1148,7 @@ test(
     const backupDb = new Database(join(backupPath, 'platform.db'), {
       readonly: true,
     });
-    assert.equal(backupDb.pragma('user_version', { simple: true }), 4);
+    assert.equal(backupDb.pragma('user_version', { simple: true }), 5);
     assert.equal(
       backupDb.prepare('SELECT COUNT(*) AS n FROM ssh_keys').get().n,
       1,

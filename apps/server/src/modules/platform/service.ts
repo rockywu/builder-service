@@ -28,7 +28,7 @@ export interface State {
   jobs: Job[];
   releases: Release[];
   users: User[];
-  settings: { maxConcurrent: number };
+  settings: { maxConcurrent: number; nodeRegistry: string };
 }
 export class PlatformService {
   readonly runner: BuildRunner;

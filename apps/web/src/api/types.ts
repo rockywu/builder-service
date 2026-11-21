@@ -93,7 +93,7 @@ export interface Job {
   snapshot: Pick<
     Project,
     'workdir' | 'buildScript' | 'artifactPath' | 'timeout' | 'sshKeyId'
-  > & { useCache?: boolean };
+  > & { useCache?: boolean; nodeRegistry?: string };
   steps: string[];
   script: LogLine[];
   visibleLines: number;
