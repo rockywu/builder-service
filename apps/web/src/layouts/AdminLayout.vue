@@ -88,7 +88,6 @@ async function signOut() {
           <el-tooltip content="公开下载页" placement="bottom">
             <RouterLink
               to="/"
-              target="_blank"
               class="grid size-8 place-items-center rounded-md text-slate-500 hover:bg-slate-100 hover:text-slate-800"
               aria-label="打开公开下载页"
             >
